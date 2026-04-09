@@ -1,6 +1,9 @@
 #!/bin/bash
 # Copyright © 2026 Igarin. All rights reserved.
 
+# ── OS 判定 ─────────────────────────────────────────────────
+OS="$(uname -s)"   # Darwin = macOS / Linux = Linux
+
 # ── 色定義（$'...' 形式で ESC を事前展開）───────────────
 BOLD=$'\033[1m'
 CYAN=$'\033[0;36m'
@@ -140,7 +143,13 @@ fi
 # ── 時刻・継続時間の表示 ─────────────────────────────────
 now_time=$(date "+%Y-%m-%d %H:%M:%S")
 end_epoch=$(( $(date +%s) + seconds ))
-end_time=$(date -r "$end_epoch" "+%Y-%m-%d %H:%M:%S")
+
+# date -r はmacOS（BSD date）専用。Linuxでは date -d @EPOCH を使用。
+if [[ "$OS" == "Darwin" ]]; then
+  end_time=$(date -r "$end_epoch" "+%Y-%m-%d %H:%M:%S")
+else
+  end_time=$(date -d "@${end_epoch}" "+%Y-%m-%d %H:%M:%S")
+fi
 
 H=$(( seconds / 3600 ))
 M=$(( (seconds % 3600) / 60 ))
@@ -157,7 +166,27 @@ printf '%s\n' "${YELLOW}💡 スリープを防止しています... (Ctrl+C で
 printf '\n'
 
 # ── Caffeinate 実行 ─────────────────────────────────────
-caffeinate -u -d -t "$seconds"
+# macOS: caffeinate（標準搭載）
+# Linux: systemd-inhibit（systemd 環境で標準搭載）
+if [[ "$OS" == "Darwin" ]]; then
+  caffeinate -u -d -t "$seconds"
+else
+  # systemd-inhibit が存在するか確認
+  if ! command -v systemd-inhibit &>/dev/null; then
+    printf '%s\n' "${RED}❌ systemd-inhibit が見つかりません。${RESET}"
+    printf '%s\n' "このLinux環境ではスリープ防止機能を利用できません。"
+    printf '%s\n' "（systemd が必要です）"
+    printf '\n'
+    read -r -p "Enterで閉じる..." _
+    exit 1
+  fi
+  systemd-inhibit \
+    --what=sleep:idle \
+    --who="Caffeinate Timer" \
+    --why="User requested caffeinate timer" \
+    --mode=block \
+    sleep "$seconds"
+fi
 
 # ── 正常終了 ─────────────────────────────────────────────
 printf '%s\n' "${GREEN}✅ 終了しました。 ($(date "+%H:%M:%S"))${RESET}"
