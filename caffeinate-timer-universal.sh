@@ -180,12 +180,17 @@ else
     read -r -p "Enterで閉じる..." _
     exit 1
   fi
-  systemd-inhibit \
+  if ! systemd-inhibit \
     --what=sleep:idle \
     --who="Caffeinate Timer" \
     --why="User requested caffeinate timer" \
     --mode=block \
+    sleep "$seconds" 2>/dev/null; then
+    printf '%s\n' "${YELLOW}⚠️  スリープ防止の実行に失敗しました。この環境では権限がない可能性があります。${RESET}"
+    printf '%s\n' "   タイマーとしてのみ続行します..."
+    printf '\n'
     sleep "$seconds"
+  fi
 fi
 
 # ── 正常終了 ─────────────────────────────────────────────
