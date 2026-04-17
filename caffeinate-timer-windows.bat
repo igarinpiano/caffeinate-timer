@@ -1,7 +1,7 @@
 @echo off
 chcp 65001 >nul
 set "__CAFFEINATE_FILE=%~f0"
-powershell -ExecutionPolicy Bypass -NoProfile -Command "$t=[IO.File]::ReadAllText($env:__CAFFEINATE_FILE,[Text.Encoding]::UTF8);$s=$t.IndexOf('<#PS')+4;$e=$t.LastIndexOf('#>PS');& ([scriptblock]::Create($t.Substring($s,$e-$s)))"
+powershell -ExecutionPolicy Bypass -NoProfile -Command "$t=[IO.File]::ReadAllText($env:__CAFFEINATE_FILE,[Text.Encoding]::UTF8);$si=$t.IndexOf('<#PS');$ei=$t.LastIndexOf('#>PS');if($si -lt 0 -or $ei -le $si){Write-Host 'スクリプトの抽出に失敗しました。';exit 1};& ([scriptblock]::Create($t.Substring($si+4,$ei-$si-4)))"
 exit /b
 <#PS
 # Copyright © 2026 Igarin. All rights reserved.
@@ -101,7 +101,7 @@ if      ($inp -match '^(\d+)$') {
 
 # 2) 小数のみ → 分（例: 1.5 → 90秒）
 } elseif ($inp -match '^(\d+)\.(\d+)$') {
-    $ip = [long]$Matches[1]; $dp = $Matches[2]; $dl = $dp.Length
+    $ip = [long]$Matches[1]; $dp = $Matches[2]; if ($dp.Length -gt 9) { $dp = $dp.Substring(0, 9) }; $dl = $dp.Length
     $pow = [long][Math]::Pow(10, $dl)
     $seconds = [long][Math]::Truncate(($ip * $pow + [long]$dp) * 60L / $pow)
 
@@ -115,7 +115,7 @@ if      ($inp -match '^(\d+)$') {
 
 # 5) 小数h → 時間（例: 1.5h）
 } elseif ($inp -match '^(\d+)\.(\d+)h$') {
-    $ip = [long]$Matches[1]; $dp = $Matches[2]; $dl = $dp.Length
+    $ip = [long]$Matches[1]; $dp = $Matches[2]; if ($dp.Length -gt 9) { $dp = $dp.Substring(0, 9) }; $dl = $dp.Length
     $pow = [long][Math]::Pow(10, $dl)
     $seconds = [long][Math]::Truncate(($ip * $pow + [long]$dp) * 3600L / $pow)
 
