@@ -76,7 +76,7 @@ if [[ "$input" =~ ^([0-9]+)$ ]]; then
 
 # 2) 小数のみ → 分（例: 1.5 → 90秒）
 elif [[ "$input" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
-  ip=${BASH_REMATCH[1]}; dp=${BASH_REMATCH[2]}; dl=${#dp}
+  ip=${BASH_REMATCH[1]}; dp=${BASH_REMATCH[2]:0:9}; dl=${#dp}
   seconds=$(( (10#$ip * (10**dl) + 10#$dp) * 60 / (10**dl) ))
 
 # 3) X:Y → 分:秒
@@ -89,7 +89,7 @@ elif [[ "$input" =~ ^([0-9]+):([0-9]+):([0-9]+)$ ]]; then
 
 # 5) 小数h → 時間（例: 1.5h）
 elif [[ "$input" =~ ^([0-9]+)\.([0-9]+)h$ ]]; then
-  ip=${BASH_REMATCH[1]}; dp=${BASH_REMATCH[2]}; dl=${#dp}
+  ip=${BASH_REMATCH[1]}; dp=${BASH_REMATCH[2]:0:9}; dl=${#dp}
   seconds=$(( (10#$ip * (10**dl) + 10#$dp) * 3600 / (10**dl) ))
 
 # 6) XhYmZs（最も長いものを先に）
