@@ -192,24 +192,34 @@ try { [Console]::TreatControlCAsInput = $true } catch {}
 $targetTime  = (Get-Date).AddSeconds($seconds)
 $interrupted = $false
 
-while ((Get-Date) -lt $targetTime) {
-    Start-Sleep -Milliseconds 200
-    try {
-        if ([Console]::KeyAvailable) {
-            $key = [Console]::ReadKey($true)
-            if ($key.Key -eq 'C' -and
-                ($key.Modifiers -band [ConsoleModifiers]::Control)) {
-                $interrupted = $true
-                break
+# ── try/finally でクリーンアップを保証 ──────────────────
+# 異常終了・Terminating Error 発生時でも TreatControlCAsInput の
+# リセットとスリープ防止の解除が必ず実行されるようにする。
+try {
+    while ((Get-Date) -lt $targetTime) {
+        Start-Sleep -Milliseconds 200
+        try {
+            # バッファに溜まったキー入力をすべて消化（ドレイン）する。
+            # if のままでは 1 イテレーションにつき 1 キーしか読まず、
+            # 複数キーが積まれていると Ctrl+C 検知まで最大
+            # (先行キー数 × 200ms) の遅延が生じるため while に変更。
+            while ([Console]::KeyAvailable) {
+                $key = [Console]::ReadKey($true)
+                if ($key.Key -eq 'C' -and
+                    ($key.Modifiers -band [ConsoleModifiers]::Control)) {
+                    $interrupted = $true
+                    break  # 内側の while (KeyAvailable) を抜ける
+                }
             }
-        }
-    } catch {}
+        } catch {}
+        if ($interrupted) { break }  # 外側の while (targetTime) を抜ける
+    }
+} finally {
+    # ── TreatControlCAsInput リセット ───────────────────
+    try { [Console]::TreatControlCAsInput = $false } catch {}
+    # ── スリープ防止 解除 ────────────────────────────────
+    try { [WinPwr]::Allow() } catch {}
 }
-
-try { [Console]::TreatControlCAsInput = $false } catch {}
-
-# ── スリープ防止 解除 ────────────────────────────────────
-try { [WinPwr]::Allow() } catch {}
 
 # ── 正常終了 / 中断 ──────────────────────────────────────
 if ($interrupted) {
