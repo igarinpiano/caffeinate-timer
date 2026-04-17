@@ -91,6 +91,17 @@ $inp = $inp -replace 'hours?',   'h' `
             -replace 'seconds?', 's' `
             -replace 'secs?',    's'
 
+# ── 入力文字数チェック ───────────────────────────────────
+# 正規化後16文字を超えると時間単位×乗数の乗算がInt64を超える
+# （例: 16桁×3600は桁あふれし、0秒チェックでも補足できない正のゴミ値を生じる）
+if ($inp.Length -gt 16) {
+    Write-Host "${RED}❌ 入力が長すぎます（正規化後16文字以内）。${RESET}"
+    Write-Host "例: ${CYAN}90 / 1:30 / 1:30:00 / 45m / 1h / 1.5h / 1h30m20s${RESET}"
+    Write-Host ""
+    Read-Host "Enterで閉じる..."
+    exit 1
+}
+
 # ── パターンマッチング ───────────────────────────────────
 $seconds = 0L
 $parsed  = $true
@@ -158,6 +169,16 @@ if (-not $parsed) {
 # ── 0秒チェック ─────────────────────────────────────────
 if ($seconds -le 0) {
     Write-Host "${RED}❌ 0秒以下の値は設定できません。${RESET}"
+    Write-Host ""
+    Read-Host "Enterで閉じる..."
+    exit 1
+}
+
+# ── 最大秒数チェック ─────────────────────────────────────
+# (Get-Date).AddSeconds() が DateTime.MaxValue(西暦9999年)を超えると例外をスローする
+$maxSeconds = [long](([DateTime]::MaxValue - (Get-Date)).TotalSeconds) - 1L
+if ($seconds -gt $maxSeconds) {
+    Write-Host "${RED}❌ 設定可能な最大時間を超えています。${RESET}"
     Write-Host ""
     Read-Host "Enterで閉じる..."
     exit 1
