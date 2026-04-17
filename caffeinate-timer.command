@@ -149,8 +149,9 @@ if [ "$seconds" -le 0 ]; then
 fi
 
 # ── 最大秒数チェック ─────────────────────────────────────
-# int64算術およびdate -r のエポック加算がオーバーフローしない上限
-_MAX_SECONDS=9000000000000000000
+# end_epoch = now + seconds が date -r の処理可能な上限(16桁エポック)を超えないよう
+# 実行時刻から動的に算出する
+_MAX_SECONDS=$(( 9999999999999999 - $(date +%s) ))
 if [ "$seconds" -gt "$_MAX_SECONDS" ]; then
   printf '%s\n' "${RED}❌ 設定可能な最大時間を超えています。${RESET}"
   printf '\n'
