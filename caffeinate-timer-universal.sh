@@ -72,7 +72,7 @@ input=$(printf '%s' "$input" | sed -E \
 # ── 入力文字数チェック ───────────────────────────────────
 # 正規化後16文字を超えると時間単位×乗数の乗算がint64を超える
 # （例: 16桁×3600は桁あふれし、0秒チェックでも補足できない正のゴミ値を生じる）
-if [ ${#input} -gt 16 ]; then
+if [ "${#input}" -gt 16 ]; then
   printf '%s\n' "${RED}❌ 入力が長すぎます（正規化後16文字以内）。${RESET}"
   printf '%s\n' "例: ${CYAN}90 / 1:30 / 1:30:00 / 45m / 1h / 1.5h / 1h30m20s${RESET}"
   printf '\n'
@@ -176,7 +176,7 @@ fi
 H=$(( seconds / 3600 ))
 M=$(( (seconds % 3600) / 60 ))
 S=$(( seconds % 60 ))
-duration_str=$(printf "%02d:%02d:%02d" $H $M $S)
+duration_str=$(printf "%02d:%02d:%02d" "$H" "$M" "$S")
 
 printf '%s\n' "${CYAN}────────────────────────────────────────${RESET}"
 printf '%s\n' "  ${BOLD}現在時刻:${RESET} ${GREEN}${now_time}${RESET}"
@@ -195,14 +195,10 @@ if [[ "$OS" == "Darwin" ]]; then
 else
   # systemd-inhibit が存在するか確認
   if ! command -v systemd-inhibit &>/dev/null; then
-    printf '%s\n' "${RED}❌ systemd-inhibit が見つかりません。${RESET}"
-    printf '%s\n' "このLinux環境ではスリープ防止機能を利用できません。"
-    printf '%s\n' "（systemd が必要です）"
+    printf '%s\n' "${YELLOW}⚠️  systemd-inhibit が見つかりません。スリープ防止機能は使えないため、タイマーとしてのみ続行します。${RESET}"
     printf '\n'
-    read -r -p "Enterで閉じる..." _
-    exit 1
-  fi
-  if ! systemd-inhibit \
+    sleep "$seconds"
+  elif ! systemd-inhibit \
     --what=sleep:idle \
     --who="Caffeinate Timer" \
     --why="User requested caffeinate timer" \
