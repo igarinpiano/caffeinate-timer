@@ -69,7 +69,7 @@ input=$(printf '%s' "$input" | sed -E \
 # ── 入力文字数チェック ───────────────────────────────────
 # 正規化後16文字を超えると時間単位×乗数の乗算がint64を超える
 # （例: 16桁×3600は桁あふれし、0秒チェックでも補足できない正のゴミ値を生じる）
-if [ ${#input} -gt 16 ]; then
+if [ "${#input}" -gt 16 ]; then
   printf '%s\n' "${RED}❌ 入力が長すぎます（正規化後16文字以内）。${RESET}"
   printf '%s\n' "例: ${CYAN}90 / 1:30 / 1:30:00 / 45m / 1h / 1.5h / 1h30m20s${RESET}"
   printf '\n'
@@ -167,7 +167,7 @@ end_time=$(date -r "$end_epoch" "+%Y-%m-%d %H:%M:%S")
 H=$(( seconds / 3600 ))
 M=$(( (seconds % 3600) / 60 ))
 S=$(( seconds % 60 ))
-duration_str=$(printf "%02d:%02d:%02d" $H $M $S)
+duration_str=$(printf "%02d:%02d:%02d" "$H" "$M" "$S")
 
 printf '%s\n' "${CYAN}────────────────────────────────────────${RESET}"
 printf '%s\n' "  ${BOLD}現在時刻:${RESET} ${GREEN}${now_time}${RESET}"
