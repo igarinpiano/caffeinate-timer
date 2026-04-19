@@ -60,23 +60,25 @@ Write-Host "例:"
 Write-Host "  ${CYAN}90${RESET}           → 90分"
 Write-Host "  ${CYAN}1:30:00${RESET}      → 1時間30分0秒"
 Write-Host "  ${CYAN}1:30${RESET}         → 1分30秒"
+Write-Host "  ${CYAN}1d / 1day${RESET}    → 1日"
 Write-Host "  ${CYAN}1h / 1hour${RESET}   → 1時間"
 Write-Host "  ${CYAN}45m / 45min${RESET}  → 45分"
 Write-Host "  ${CYAN}20s / 20sec${RESET}  → 20秒"
 Write-Host "  ${CYAN}1h30m20s${RESET}     → 1時間30分20秒"
 Write-Host "  ${CYAN}1h20s${RESET}        → 1時間20秒"
 Write-Host "  ${CYAN}1.5h${RESET}         → 1時間30分"
+Write-Host "  ${CYAN}1d3h30m${RESET}      → 1日3時間30分"
 Write-Host ""
 $raw = Read-Host "入力"
 Write-Host ""
 
 # ── 前処理①：全角→半角変換 ─────────────────────────────
 # （sed の y コマンド相当をPowerShell の Replace で実現）
-# 対象：全角数字／コロン／小数点／単位 h m s／全角スペース
+# 対象：全角数字／コロン／小数点／単位 h m s d／全角スペース
 $fwTable = @(
     @('０','0'),@('１','1'),@('２','2'),@('３','3'),@('４','4'),
     @('５','5'),@('６','6'),@('７','7'),@('８','8'),@('９','9'),
-    @('：',':'),@('．','.'),@('ｈ','h'),@('ｍ','m'),@('ｓ','s'),@('　',' ')
+    @('：',':'),@('．','.'),@('ｈ','h'),@('ｍ','m'),@('ｓ','s'),@('ｄ','d'),@('　',' ')
 )
 foreach ($pair in $fwTable) { $raw = $raw.Replace($pair[0], $pair[1]) }
 
@@ -89,14 +91,16 @@ $inp = $inp -replace 'hours?',   'h' `
             -replace 'minutes?', 'm' `
             -replace 'mins?',    'm' `
             -replace 'seconds?', 's' `
-            -replace 'secs?',    's'
+            -replace 'secs?',    's' `
+            -replace 'days?',    'd'
 
 # ── 入力文字数チェック ───────────────────────────────────
 # 正規化後16文字を超えると時間単位×乗数の乗算がInt64を超える
 # （例: 16桁×3600は桁あふれし、0秒チェックでも補足できない正のゴミ値を生じる）
+# ※ d 単位（×86400）の単体入力は別途14桁以内チェックを追加（後述）
 if ($inp.Length -gt 16) {
     Write-Host "${RED}❌ 入力が長すぎます（正規化後16文字以内）。${RESET}"
-    Write-Host "例: ${CYAN}90 / 1:30 / 1:30:00 / 45m / 1h / 1.5h / 1h30m20s${RESET}"
+    Write-Host "例: ${CYAN}90 / 1:30 / 1:30:00 / 45m / 1h / 1.5h / 1h30m20s / 1d / 1d3h${RESET}"
     Write-Host ""
     Read-Host "Enterで閉じる..."
     exit 1
@@ -130,37 +134,78 @@ if      ($inp -match '^(\d+)$') {
     $pow = [long][Math]::Pow(10, $dl)
     $seconds = [long][Math]::Truncate(($ip * $pow + [long]$dp) * 3600L / $pow)
 
-# 6) XhYmZs（最も長いものを先に）
+# 6) XdYhZmWs（最も長いものを先に）
+} elseif ($inp -match '^(\d+)d(\d+)h(\d+)m(\d+)s$') {
+    $seconds = [long]$Matches[1] * 86400L + [long]$Matches[2] * 3600L + [long]$Matches[3] * 60L + [long]$Matches[4]
+
+# 7) XdYhZm
+} elseif ($inp -match '^(\d+)d(\d+)h(\d+)m$') {
+    $seconds = [long]$Matches[1] * 86400L + [long]$Matches[2] * 3600L + [long]$Matches[3] * 60L
+
+# 8) XdYhZs（分なし）
+} elseif ($inp -match '^(\d+)d(\d+)h(\d+)s$') {
+    $seconds = [long]$Matches[1] * 86400L + [long]$Matches[2] * 3600L + [long]$Matches[3]
+
+# 9) XdYmZs（時なし）
+} elseif ($inp -match '^(\d+)d(\d+)m(\d+)s$') {
+    $seconds = [long]$Matches[1] * 86400L + [long]$Matches[2] * 60L + [long]$Matches[3]
+
+# 10) XdYh
+} elseif ($inp -match '^(\d+)d(\d+)h$') {
+    $seconds = [long]$Matches[1] * 86400L + [long]$Matches[2] * 3600L
+
+# 11) XdYm
+} elseif ($inp -match '^(\d+)d(\d+)m$') {
+    $seconds = [long]$Matches[1] * 86400L + [long]$Matches[2] * 60L
+
+# 12) XdYs（時分なし）
+} elseif ($inp -match '^(\d+)d(\d+)s$') {
+    $seconds = [long]$Matches[1] * 86400L + [long]$Matches[2]
+
+# 13) Xd のみ
+# ※ 16文字制限内でも15桁×86400はInt64を超えるため14桁以内に制限する
+} elseif ($inp -match '^(\d+)d$') {
+    $dStr = $Matches[1]
+    if ($dStr.Length -gt 14) {
+        Write-Host "${RED}❌ 入力が長すぎます（正規化後16文字以内）。${RESET}"
+        Write-Host "例: ${CYAN}90 / 1:30 / 1:30:00 / 45m / 1h / 1.5h / 1h30m20s / 1d / 1d3h${RESET}"
+        Write-Host ""
+        Read-Host "Enterで閉じる..."
+        exit 1
+    }
+    $seconds = [long]$dStr * 86400L
+
+# 14) XhYmZs
 } elseif ($inp -match '^(\d+)h(\d+)m(\d+)s$') {
     $seconds = [long]$Matches[1] * 3600L + [long]$Matches[2] * 60L + [long]$Matches[3]
 
-# 7) XhYm
+# 15) XhYm
 } elseif ($inp -match '^(\d+)h(\d+)m$') {
     $seconds = [long]$Matches[1] * 3600L + [long]$Matches[2] * 60L
 
-# 8) XhYs（分なし）
+# 16) XhYs（分なし）
 } elseif ($inp -match '^(\d+)h(\d+)s$') {
     $seconds = [long]$Matches[1] * 3600L + [long]$Matches[2]
 
-# 9) XmYs
+# 17) XmYs
 } elseif ($inp -match '^(\d+)m(\d+)s$') {
     $seconds = [long]$Matches[1] * 60L + [long]$Matches[2]
 
-# 10) Xh のみ
+# 18) Xh のみ
 } elseif ($inp -match '^(\d+)h$') { $seconds = [long]$Matches[1] * 3600L
 
-# 11) Xm のみ
+# 19) Xm のみ
 } elseif ($inp -match '^(\d+)m$') { $seconds = [long]$Matches[1] * 60L
 
-# 12) Xs のみ
+# 20) Xs のみ
 } elseif ($inp -match '^(\d+)s$') { $seconds = [long]$Matches[1]
 
-# 13) パース失敗
+# 21) パース失敗
 } else { $parsed = $false }
 
 if (-not $parsed) {
     Write-Host "${RED}❌ 入力形式がわかりませんでした。${RESET}"
-    Write-Host "例: ${CYAN}90 / 1:30 / 1:30:00 / 45m / 1h / 1.5h / 1h30m20s${RESET}"
+    Write-Host "例: ${CYAN}90 / 1:30 / 1:30:00 / 45m / 1h / 1.5h / 1h30m20s / 1d / 1d3h${RESET}"
     Write-Host ""
     Read-Host "Enterで閉じる..."
     exit 1
@@ -187,10 +232,16 @@ if ($seconds -gt $maxSeconds) {
 # ── 時刻・継続時間の表示 ─────────────────────────────────
 $nowStr = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 $endStr = (Get-Date).AddSeconds($seconds).ToString('yyyy-MM-dd HH:mm:ss')
-$hh     = [Math]::Floor($seconds / 3600L)
 $mm     = [Math]::Floor(($seconds % 3600L) / 60L)
 $ss     = $seconds % 60L
-$dur    = '{0:D2}:{1:D2}:{2:D2}' -f [int]$hh, [int]$mm, [int]$ss
+if ($seconds -ge 86400L) {
+    $dd  = [Math]::Floor($seconds / 86400L)
+    $hh  = [Math]::Floor(($seconds % 86400L) / 3600L)
+    $dur = '{0:D2}:{1:D2}:{2:D2}:{3:D2}' -f [int]$dd, [int]$hh, [int]$mm, [int]$ss
+} else {
+    $hh  = [Math]::Floor($seconds / 3600L)
+    $dur = '{0:D2}:{1:D2}:{2:D2}' -f [int]$hh, [int]$mm, [int]$ss
+}
 
 Write-Host "${CYAN}────────────────────────────────────────${RESET}"
 Write-Host "  ${BOLD}現在時刻:${RESET} ${GREEN}${nowStr}${RESET}"

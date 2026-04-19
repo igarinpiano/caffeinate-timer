@@ -32,12 +32,14 @@ printf '%s\n' "例:"
 printf '%s\n' "  ${CYAN}90${RESET}           → 90分"
 printf '%s\n' "  ${CYAN}1:30:00${RESET}      → 1時間30分0秒"
 printf '%s\n' "  ${CYAN}1:30${RESET}         → 1分30秒"
+printf '%s\n' "  ${CYAN}1d / 1day${RESET}    → 1日"
 printf '%s\n' "  ${CYAN}1h / 1hour${RESET}   → 1時間"
 printf '%s\n' "  ${CYAN}45m / 45min${RESET}  → 45分"
 printf '%s\n' "  ${CYAN}20s / 20sec${RESET}  → 20秒"
 printf '%s\n' "  ${CYAN}1h30m20s${RESET}     → 1時間30分20秒"
 printf '%s\n' "  ${CYAN}1h20s${RESET}        → 1時間20秒"
 printf '%s\n' "  ${CYAN}1.5h${RESET}         → 1時間30分"
+printf '%s\n' "  ${CYAN}1d3h30m${RESET}      → 1日3時間30分"
 printf '\n'
 read -r -p "入力: " input
 printf '\n'
@@ -46,12 +48,12 @@ printf '\n'
 # ※ sed の y コマンドはバイト長一致が必要なため、
 #    UTF-8 マルチバイト文字（全角3バイト vs ASCII1バイト）
 #    には使用不可。同等の1文字単位変換を s コマンドで実現。
-# 対象：全角数字／コロン／小数点／単位 h m s／全角スペース
+# 対象：全角数字／コロン／小数点／単位 h m s d／全角スペース
 input=$(printf '%s' "$input" | sed \
   -e 's/０/0/g' -e 's/１/1/g' -e 's/２/2/g' -e 's/３/3/g' -e 's/４/4/g' \
   -e 's/５/5/g' -e 's/６/6/g' -e 's/７/7/g' -e 's/８/8/g' -e 's/９/9/g' \
   -e 's/：/:/g' -e 's/．/./g' \
-  -e 's/ｈ/h/g' -e 's/ｍ/m/g' -e 's/ｓ/s/g' \
+  -e 's/ｈ/h/g' -e 's/ｍ/m/g' -e 's/ｓ/s/g' -e 's/ｄ/d/g' \
   -e 's/　/ /g' \
 )
 
@@ -67,14 +69,16 @@ input=$(printf '%s' "$input" | sed -E \
   -e 's/mins?/m/g'    \
   -e 's/seconds?/s/g' \
   -e 's/secs?/s/g'    \
+  -e 's/days?/d/g'    \
 )
 
 # ── 入力文字数チェック ───────────────────────────────────
 # 正規化後16文字を超えると時間単位×乗数の乗算がint64を超える
 # （例: 16桁×3600は桁あふれし、0秒チェックでも補足できない正のゴミ値を生じる）
+# ※ d 単位（×86400）の単体入力は別途14桁以内チェックを追加（後述）
 if [ "${#input}" -gt 16 ]; then
   printf '%s\n' "${RED}❌ 入力が長すぎます（正規化後16文字以内）。${RESET}"
-  printf '%s\n' "例: ${CYAN}90 / 1:30 / 1:30:00 / 45m / 1h / 1.5h / 1h30m20s${RESET}"
+  printf '%s\n' "例: ${CYAN}90 / 1:30 / 1:30:00 / 45m / 1h / 1.5h / 1h30m20s / 1d / 1d3h${RESET}"
   printf '\n'
   read -r -p "Enterで閉じる..." _
   exit 1
@@ -106,38 +110,79 @@ elif [[ "$input" =~ ^([0-9]+)\.([0-9]+)h$ ]]; then
   ip=${BASH_REMATCH[1]}; dp=${BASH_REMATCH[2]:0:9}; dl=${#dp}
   seconds=$(( (10#$ip * (10**dl) + 10#$dp) * 3600 / (10**dl) ))
 
-# 6) XhYmZs（最も長いものを先に）
+# 6) XdYhZmWs（最も長いものを先に）
+elif [[ "$input" =~ ^([0-9]+)d([0-9]+)h([0-9]+)m([0-9]+)s$ ]]; then
+  seconds=$(( 10#${BASH_REMATCH[1]} * 86400 + 10#${BASH_REMATCH[2]} * 3600 + 10#${BASH_REMATCH[3]} * 60 + 10#${BASH_REMATCH[4]} ))
+
+# 7) XdYhZm
+elif [[ "$input" =~ ^([0-9]+)d([0-9]+)h([0-9]+)m$ ]]; then
+  seconds=$(( 10#${BASH_REMATCH[1]} * 86400 + 10#${BASH_REMATCH[2]} * 3600 + 10#${BASH_REMATCH[3]} * 60 ))
+
+# 8) XdYhZs（分なし）
+elif [[ "$input" =~ ^([0-9]+)d([0-9]+)h([0-9]+)s$ ]]; then
+  seconds=$(( 10#${BASH_REMATCH[1]} * 86400 + 10#${BASH_REMATCH[2]} * 3600 + 10#${BASH_REMATCH[3]} ))
+
+# 9) XdYmZs（時なし）
+elif [[ "$input" =~ ^([0-9]+)d([0-9]+)m([0-9]+)s$ ]]; then
+  seconds=$(( 10#${BASH_REMATCH[1]} * 86400 + 10#${BASH_REMATCH[2]} * 60 + 10#${BASH_REMATCH[3]} ))
+
+# 10) XdYh
+elif [[ "$input" =~ ^([0-9]+)d([0-9]+)h$ ]]; then
+  seconds=$(( 10#${BASH_REMATCH[1]} * 86400 + 10#${BASH_REMATCH[2]} * 3600 ))
+
+# 11) XdYm
+elif [[ "$input" =~ ^([0-9]+)d([0-9]+)m$ ]]; then
+  seconds=$(( 10#${BASH_REMATCH[1]} * 86400 + 10#${BASH_REMATCH[2]} * 60 ))
+
+# 12) XdYs（時分なし）
+elif [[ "$input" =~ ^([0-9]+)d([0-9]+)s$ ]]; then
+  seconds=$(( 10#${BASH_REMATCH[1]} * 86400 + 10#${BASH_REMATCH[2]} ))
+
+# 13) Xd のみ
+# ※ 16文字制限内でも15桁×86400はint64を超えるため14桁以内に制限する
+elif [[ "$input" =~ ^([0-9]+)d$ ]]; then
+  d_val=${BASH_REMATCH[1]}
+  if [ "${#d_val}" -gt 14 ]; then
+    printf '%s\n' "${RED}❌ 入力が長すぎます（正規化後16文字以内）。${RESET}"
+    printf '%s\n' "例: ${CYAN}90 / 1:30 / 1:30:00 / 45m / 1h / 1.5h / 1h30m20s / 1d / 1d3h${RESET}"
+    printf '\n'
+    read -r -p "Enterで閉じる..." _
+    exit 1
+  fi
+  seconds=$(( 10#${d_val} * 86400 ))
+
+# 14) XhYmZs
 elif [[ "$input" =~ ^([0-9]+)h([0-9]+)m([0-9]+)s$ ]]; then
   seconds=$(( 10#${BASH_REMATCH[1]} * 3600 + 10#${BASH_REMATCH[2]} * 60 + 10#${BASH_REMATCH[3]} ))
 
-# 7) XhYm
+# 15) XhYm
 elif [[ "$input" =~ ^([0-9]+)h([0-9]+)m$ ]]; then
   seconds=$(( 10#${BASH_REMATCH[1]} * 3600 + 10#${BASH_REMATCH[2]} * 60 ))
 
-# 8) XhYs（分なし）
+# 16) XhYs（分なし）
 elif [[ "$input" =~ ^([0-9]+)h([0-9]+)s$ ]]; then
   seconds=$(( 10#${BASH_REMATCH[1]} * 3600 + 10#${BASH_REMATCH[2]} ))
 
-# 9) XmYs
+# 17) XmYs
 elif [[ "$input" =~ ^([0-9]+)m([0-9]+)s$ ]]; then
   seconds=$(( 10#${BASH_REMATCH[1]} * 60 + 10#${BASH_REMATCH[2]} ))
 
-# 10) Xh のみ
+# 18) Xh のみ
 elif [[ "$input" =~ ^([0-9]+)h$ ]]; then
   seconds=$(( 10#${BASH_REMATCH[1]} * 3600 ))
 
-# 11) Xm のみ
+# 19) Xm のみ
 elif [[ "$input" =~ ^([0-9]+)m$ ]]; then
   seconds=$(( 10#${BASH_REMATCH[1]} * 60 ))
 
-# 12) Xs のみ
+# 20) Xs のみ
 elif [[ "$input" =~ ^([0-9]+)s$ ]]; then
   seconds=$(( 10#${BASH_REMATCH[1]} ))
 
-# 13) パース失敗
+# 21) パース失敗
 else
   printf '%s\n' "${RED}❌ 入力形式がわかりませんでした。${RESET}"
-  printf '%s\n' "例: ${CYAN}90 / 1:30 / 1:30:00 / 45m / 1h / 1.5h / 1h30m20s${RESET}"
+  printf '%s\n' "例: ${CYAN}90 / 1:30 / 1:30:00 / 45m / 1h / 1.5h / 1h30m20s / 1d / 1d3h${RESET}"
   printf '\n'
   read -r -p "Enterで閉じる..." _
   exit 1
@@ -173,10 +218,16 @@ else
   end_time=$(date -d "@${end_epoch}" "+%Y-%m-%d %H:%M:%S")
 fi
 
-H=$(( seconds / 3600 ))
 M=$(( (seconds % 3600) / 60 ))
 S=$(( seconds % 60 ))
-duration_str=$(printf "%02d:%02d:%02d" "$H" "$M" "$S")
+if [ "$seconds" -ge 86400 ]; then
+  D=$(( seconds / 86400 ))
+  H=$(( (seconds % 86400) / 3600 ))
+  duration_str=$(printf "%02d:%02d:%02d:%02d" "$D" "$H" "$M" "$S")
+else
+  H=$(( seconds / 3600 ))
+  duration_str=$(printf "%02d:%02d:%02d" "$H" "$M" "$S")
+fi
 
 printf '%s\n' "${CYAN}────────────────────────────────────────${RESET}"
 printf '%s\n' "  ${BOLD}現在時刻:${RESET} ${GREEN}${now_time}${RESET}"
