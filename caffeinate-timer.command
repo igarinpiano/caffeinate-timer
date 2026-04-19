@@ -231,25 +231,28 @@ fi
 # ── 年・月のカレンダー演算（秒への変換）────────────────────────────
 # BSD date の -v オプションでカレンダーを考慮した月・年の加算を行う。
 # sub_seconds は d/h/m/s 分のみの秒数（表示用に保持）。
+# _now_epoch を先頭で一度だけ取得し、以降の全時刻計算の基点として使い回す。
+# これにより、カレンダー演算・表示・最大秒数チェックの各ステップ間で
+# システム時計が1秒進むことによるドリフトを防ぐ。
 sub_seconds=$seconds
+_now_epoch=$(date +%s)
 if [ "$year_val" -gt 0 ] || [ "$month_val" -gt 0 ]; then
-  _now_epoch=$(date +%s)
   if [ "$year_val" -gt 0 ] && [ "$month_val" -gt 0 ]; then
-    _end_cal=$(date -v "+${year_val}y" -v "+${month_val}m" +%s) || {
+    _end_cal=$(date -r "$_now_epoch" -v "+${year_val}y" -v "+${month_val}m" +%s) || {
       printf '%s\n' "${RED}❌ 設定可能な最大時間を超えています。${RESET}"
       printf '\n'
       read -r -p "Enterで閉じる..." _
       exit 1
     }
   elif [ "$year_val" -gt 0 ]; then
-    _end_cal=$(date -v "+${year_val}y" +%s) || {
+    _end_cal=$(date -r "$_now_epoch" -v "+${year_val}y" +%s) || {
       printf '%s\n' "${RED}❌ 設定可能な最大時間を超えています。${RESET}"
       printf '\n'
       read -r -p "Enterで閉じる..." _
       exit 1
     }
   else
-    _end_cal=$(date -v "+${month_val}m" +%s) || {
+    _end_cal=$(date -r "$_now_epoch" -v "+${month_val}m" +%s) || {
       printf '%s\n' "${RED}❌ 設定可能な最大時間を超えています。${RESET}"
       printf '\n'
       read -r -p "Enterで閉じる..." _
@@ -270,7 +273,7 @@ fi
 # ── 最大秒数チェック ─────────────────────────────────────
 # end_epoch = now + seconds が date -r の処理可能な上限(16桁エポック)を超えないよう
 # 実行時刻から動的に算出する
-_MAX_SECONDS=$(( 9999999999999999 - $(date +%s) ))
+_MAX_SECONDS=$(( 9999999999999999 - _now_epoch ))
 if [ "$seconds" -gt "$_MAX_SECONDS" ]; then
   printf '%s\n' "${RED}❌ 設定可能な最大時間を超えています。${RESET}"
   printf '\n'
@@ -279,8 +282,8 @@ if [ "$seconds" -gt "$_MAX_SECONDS" ]; then
 fi
 
 # ── 時刻・継続時間の表示 ─────────────────────────────────
-now_time=$(date "+%Y-%m-%d %H:%M:%S")
-end_epoch=$(( $(date +%s) + seconds ))
+now_time=$(date -r "$_now_epoch" "+%Y-%m-%d %H:%M:%S")
+end_epoch=$(( _now_epoch + seconds ))
 end_time=$(date -r "$end_epoch" "+%Y-%m-%d %H:%M:%S")
 
 _disp_S=$(( sub_seconds % 60 ))

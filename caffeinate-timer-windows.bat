@@ -256,10 +256,13 @@ if (-not $parsed) {
 # ── 年・月のカレンダー演算（秒への変換）──────────────────────────────
 # AddYears()/AddMonths() はカレンダーを考慮した正確な月・年の加算を行う。
 # sub_seconds は d/h/m/s 分のみの秒数（表示用に保持）。
+# $_now を先頭で一度だけ取得し、以降の全時刻計算の基点として使い回す。
+# これにより、カレンダー演算・表示・最大秒数チェックの各ステップ間で
+# システム時計が1秒進むことによるドリフトを防ぐ。
 $subSeconds = $seconds
+$_now = Get-Date
 if ($yearVal -gt 0 -or $monthVal -gt 0) {
     try {
-        $_now    = Get-Date
         $_endCal = $_now.AddYears([int]$yearVal).AddMonths([int]$monthVal)
         $seconds = [long]($_endCal - $_now).TotalSeconds + $subSeconds
     } catch {
@@ -280,7 +283,7 @@ if ($seconds -le 0) {
 
 # ── 最大秒数チェック ─────────────────────────────────────
 # (Get-Date).AddSeconds() が DateTime.MaxValue(西暦9999年)を超えると例外をスローする
-$maxSeconds = [long](([DateTime]::MaxValue - (Get-Date)).TotalSeconds) - 1L
+$maxSeconds = [long](([DateTime]::MaxValue - $_now).TotalSeconds) - 1L
 if ($seconds -gt $maxSeconds) {
     Write-Host "${RED}❌ 設定可能な最大時間を超えています。${RESET}"
     Write-Host ""
@@ -289,8 +292,8 @@ if ($seconds -gt $maxSeconds) {
 }
 
 # ── 時刻・継続時間の表示 ─────────────────────────────────
-$nowStr = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-$endStr = (Get-Date).AddSeconds($seconds).ToString('yyyy-MM-dd HH:mm:ss')
+$nowStr = $_now.ToString('yyyy-MM-dd HH:mm:ss')
+$endStr = $_now.AddSeconds($seconds).ToString('yyyy-MM-dd HH:mm:ss')
 $_dS = $subSeconds % 60L
 $_dM = [Math]::Floor(($subSeconds % 3600L) / 60L)
 $_dH = [Math]::Floor(($subSeconds % 86400L) / 3600L)
