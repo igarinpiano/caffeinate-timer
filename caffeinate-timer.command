@@ -37,6 +37,10 @@ printf '%s\n' "  ${CYAN}1h30m20s${RESET}     → 1時間30分20秒"
 printf '%s\n' "  ${CYAN}1h20s${RESET}        → 1時間20秒"
 printf '%s\n' "  ${CYAN}1.5h${RESET}         → 1時間30分"
 printf '%s\n' "  ${CYAN}1d3h30m${RESET}      → 1日3時間30分"
+printf '%s\n' "  ${CYAN}2mo / 2month${RESET} → 2ヶ月"
+printf '%s\n' "  ${CYAN}1y / 1year${RESET}   → 1年"
+printf '%s\n' "  ${CYAN}1y2mo${RESET}        → 1年2ヶ月"
+printf '%s\n' "  ${CYAN}1y2mo3h30m${RESET}   → 1年2ヶ月3時間30分"
 printf '\n'
 read -r -p "入力: " input
 printf '\n'
@@ -45,12 +49,12 @@ printf '\n'
 # ※ sed の y コマンドはバイト長一致が必要なため、
 #    UTF-8 マルチバイト文字（全角3バイト vs ASCII1バイト）
 #    には使用不可。同等の1文字単位変換を s コマンドで実現。
-# 対象：全角数字／コロン／小数点／単位 h m s d／全角スペース
+# 対象：全角数字／コロン／小数点／単位 h m s d y o／全角スペース
 input=$(printf '%s' "$input" | sed \
   -e 's/０/0/g' -e 's/１/1/g' -e 's/２/2/g' -e 's/３/3/g' -e 's/４/4/g' \
   -e 's/５/5/g' -e 's/６/6/g' -e 's/７/7/g' -e 's/８/8/g' -e 's/９/9/g' \
   -e 's/：/:/g' -e 's/．/./g' \
-  -e 's/ｈ/h/g' -e 's/ｍ/m/g' -e 's/ｓ/s/g' -e 's/ｄ/d/g' \
+  -e 's/ｈ/h/g' -e 's/ｍ/m/g' -e 's/ｓ/s/g' -e 's/ｄ/d/g' -e 's/ｙ/y/g' -e 's/ｏ/o/g' \
   -e 's/　/ /g' \
 )
 
@@ -59,15 +63,50 @@ input="${input// /}"
 input=$(printf '%s' "$input" | tr '[:upper:]' '[:lower:]')
 
 # ── 単位を正規化（長い表記 → 短い表記）─────────────────
+# ※ months / years を先に正規化して minutes / seconds / days と競合しないようにする
 input=$(printf '%s' "$input" | sed -E \
-  -e 's/hours?/h/g'   \
-  -e 's/hrs?/h/g'     \
-  -e 's/minutes?/m/g' \
-  -e 's/mins?/m/g'    \
-  -e 's/seconds?/s/g' \
-  -e 's/secs?/s/g'    \
-  -e 's/days?/d/g'    \
+  -e 's/months?/mo/g'  \
+  -e 's/years?/y/g'    \
+  -e 's/yrs?/y/g'      \
+  -e 's/hours?/h/g'    \
+  -e 's/hrs?/h/g'      \
+  -e 's/minutes?/m/g'  \
+  -e 's/mins?/m/g'     \
+  -e 's/seconds?/s/g'  \
+  -e 's/secs?/s/g'     \
+  -e 's/days?/d/g'     \
 )
+
+# ── 年・月コンポーネントの抽出 ──────────────────────────────────────
+# カレンダー演算が必要なため、パターンマッチの前に y / mo を分離する。
+# 数字は 10# プレフィックスで8進数誤認を防止。
+# 桁数を4桁以内に制限し BSD date -v への過大入力を防ぐ。
+year_val=0
+month_val=0
+
+if [[ "$input" =~ ^([0-9]+)y(.*)$ ]]; then
+  if [ "${#BASH_REMATCH[1]}" -gt 4 ]; then
+    printf '%s\n' "${RED}❌ 入力が長すぎます（正規化後16文字以内）。${RESET}"
+    printf '%s\n' "例: ${CYAN}90 / 1:30 / 1:30:00 / 45m / 1h / 1.5h / 1h30m20s / 1d / 1d3h${RESET}"
+    printf '\n'
+    read -r -p "Enterで閉じる..." _
+    exit 1
+  fi
+  year_val=$(( 10#${BASH_REMATCH[1]} ))
+  input="${BASH_REMATCH[2]}"
+fi
+
+if [[ "$input" =~ ^([0-9]+)mo(.*)$ ]]; then
+  if [ "${#BASH_REMATCH[1]}" -gt 4 ]; then
+    printf '%s\n' "${RED}❌ 入力が長すぎます（正規化後16文字以内）。${RESET}"
+    printf '%s\n' "例: ${CYAN}90 / 1:30 / 1:30:00 / 45m / 1h / 1.5h / 1h30m20s / 1d / 1d3h${RESET}"
+    printf '\n'
+    read -r -p "Enterで閉じる..." _
+    exit 1
+  fi
+  month_val=$(( 10#${BASH_REMATCH[1]} ))
+  input="${BASH_REMATCH[2]}"
+fi
 
 # ── 入力文字数チェック ───────────────────────────────────
 # 正規化後16文字を超えると時間単位×乗数の乗算がint64を超える
@@ -85,8 +124,12 @@ seconds=0
 
 # ── パターンマッチング ───────────────────────────────────
 
+# 0) 年・月のみ（d/h/m/s なし）
+if [[ -z "$input" ]] && (( year_val > 0 || month_val > 0 )); then
+  : # d/h/m/s 分は 0 秒として扱う（年・月のみ指定）
+
 # 1) 整数のみ → 分
-if [[ "$input" =~ ^([0-9]+)$ ]]; then
+elif [[ "$input" =~ ^([0-9]+)$ ]]; then
   seconds=$(( 10#${BASH_REMATCH[1]} * 60 ))
 
 # 2) 小数のみ → 分（例: 1.5 → 90秒）
@@ -185,6 +228,37 @@ else
   exit 1
 fi
 
+# ── 年・月のカレンダー演算（秒への変換）────────────────────────────
+# BSD date の -v オプションでカレンダーを考慮した月・年の加算を行う。
+# sub_seconds は d/h/m/s 分のみの秒数（表示用に保持）。
+sub_seconds=$seconds
+if [ "$year_val" -gt 0 ] || [ "$month_val" -gt 0 ]; then
+  _now_epoch=$(date +%s)
+  if [ "$year_val" -gt 0 ] && [ "$month_val" -gt 0 ]; then
+    _end_cal=$(date -v "+${year_val}y" -v "+${month_val}m" +%s) || {
+      printf '%s\n' "${RED}❌ 設定可能な最大時間を超えています。${RESET}"
+      printf '\n'
+      read -r -p "Enterで閉じる..." _
+      exit 1
+    }
+  elif [ "$year_val" -gt 0 ]; then
+    _end_cal=$(date -v "+${year_val}y" +%s) || {
+      printf '%s\n' "${RED}❌ 設定可能な最大時間を超えています。${RESET}"
+      printf '\n'
+      read -r -p "Enterで閉じる..." _
+      exit 1
+    }
+  else
+    _end_cal=$(date -v "+${month_val}m" +%s) || {
+      printf '%s\n' "${RED}❌ 設定可能な最大時間を超えています。${RESET}"
+      printf '\n'
+      read -r -p "Enterで閉じる..." _
+      exit 1
+    }
+  fi
+  seconds=$(( _end_cal - _now_epoch + sub_seconds ))
+fi
+
 # ── 0秒チェック ─────────────────────────────────────────
 if [ "$seconds" -le 0 ]; then
   printf '%s\n' "${RED}❌ 0秒以下の値は設定できません。${RESET}"
@@ -209,15 +283,18 @@ now_time=$(date "+%Y-%m-%d %H:%M:%S")
 end_epoch=$(( $(date +%s) + seconds ))
 end_time=$(date -r "$end_epoch" "+%Y-%m-%d %H:%M:%S")
 
-M=$(( (seconds % 3600) / 60 ))
-S=$(( seconds % 60 ))
-if [ "$seconds" -ge 86400 ]; then
-  D=$(( seconds / 86400 ))
-  H=$(( (seconds % 86400) / 3600 ))
-  duration_str=$(printf "%02d:%02d:%02d:%02d" "$D" "$H" "$M" "$S")
+_disp_S=$(( sub_seconds % 60 ))
+_disp_M=$(( (sub_seconds % 3600) / 60 ))
+_disp_H=$(( (sub_seconds % 86400) / 3600 ))
+_disp_D=$(( sub_seconds / 86400 ))
+if [ "$year_val" -gt 0 ]; then
+  duration_str=$(printf "%02d:%02d:%02d:%02d:%02d:%02d" "$year_val" "$month_val" "$_disp_D" "$_disp_H" "$_disp_M" "$_disp_S")
+elif [ "$month_val" -gt 0 ]; then
+  duration_str=$(printf "%02d:%02d:%02d:%02d:%02d" "$month_val" "$_disp_D" "$_disp_H" "$_disp_M" "$_disp_S")
+elif [ "$sub_seconds" -ge 86400 ]; then
+  duration_str=$(printf "%02d:%02d:%02d:%02d" "$_disp_D" "$_disp_H" "$_disp_M" "$_disp_S")
 else
-  H=$(( seconds / 3600 ))
-  duration_str=$(printf "%02d:%02d:%02d" "$H" "$M" "$S")
+  duration_str=$(printf "%02d:%02d:%02d" "$_disp_H" "$_disp_M" "$_disp_S")
 fi
 
 printf '%s\n' "${CYAN}────────────────────────────────────────${RESET}"

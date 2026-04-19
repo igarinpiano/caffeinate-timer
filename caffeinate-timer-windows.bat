@@ -68,6 +68,10 @@ Write-Host "  ${CYAN}1h30m20s${RESET}     → 1時間30分20秒"
 Write-Host "  ${CYAN}1h20s${RESET}        → 1時間20秒"
 Write-Host "  ${CYAN}1.5h${RESET}         → 1時間30分"
 Write-Host "  ${CYAN}1d3h30m${RESET}      → 1日3時間30分"
+Write-Host "  ${CYAN}2mo / 2month${RESET} → 2ヶ月"
+Write-Host "  ${CYAN}1y / 1year${RESET}   → 1年"
+Write-Host "  ${CYAN}1y2mo${RESET}        → 1年2ヶ月"
+Write-Host "  ${CYAN}1y2mo3h30m${RESET}   → 1年2ヶ月3時間30分"
 Write-Host ""
 $raw = Read-Host "入力"
 Write-Host ""
@@ -78,7 +82,7 @@ Write-Host ""
 $fwTable = @(
     @('０','0'),@('１','1'),@('２','2'),@('３','3'),@('４','4'),
     @('５','5'),@('６','6'),@('７','7'),@('８','8'),@('９','9'),
-    @('：',':'),@('．','.'),@('ｈ','h'),@('ｍ','m'),@('ｓ','s'),@('ｄ','d'),@('　',' ')
+    @('：',':'),@('．','.'),@('ｈ','h'),@('ｍ','m'),@('ｓ','s'),@('ｄ','d'),@('ｙ','y'),@('ｏ','o'),@('　',' ')
 )
 foreach ($pair in $fwTable) { $raw = $raw.Replace($pair[0], $pair[1]) }
 
@@ -86,13 +90,47 @@ foreach ($pair in $fwTable) { $raw = $raw.Replace($pair[0], $pair[1]) }
 $inp = $raw.Replace(' ', '').ToLower()
 
 # ── 単位を正規化（長い表記 → 短い表記）─────────────────
-$inp = $inp -replace 'hours?',   'h' `
-            -replace 'hrs?',     'h' `
-            -replace 'minutes?', 'm' `
-            -replace 'mins?',    'm' `
-            -replace 'seconds?', 's' `
-            -replace 'secs?',    's' `
+# ※ months / years を先に正規化して minutes / seconds / days と競合しないようにする
+$inp = $inp -replace 'months?',  'mo' `
+            -replace 'years?',   'y'  `
+            -replace 'yrs?',     'y'  `
+            -replace 'hours?',   'h'  `
+            -replace 'hrs?',     'h'  `
+            -replace 'minutes?', 'm'  `
+            -replace 'mins?',    'm'  `
+            -replace 'seconds?', 's'  `
+            -replace 'secs?',    's'  `
             -replace 'days?',    'd'
+
+# ── 年・月コンポーネントの抽出 ──────────────────────────────────────
+# カレンダー演算が必要なため、パターンマッチの前に y / mo を分離する。
+# 桁数を4桁以内に制限し AddYears()/AddMonths() への過大入力を防ぐ。
+$yearVal  = 0L
+$monthVal = 0L
+
+if ($inp -match '^(\d+)y(.*)$') {
+    if ($Matches[1].Length -gt 4) {
+        Write-Host "${RED}❌ 入力が長すぎます（正規化後16文字以内）。${RESET}"
+        Write-Host "例: ${CYAN}90 / 1:30 / 1:30:00 / 45m / 1h / 1.5h / 1h30m20s / 1d / 1d3h${RESET}"
+        Write-Host ""
+        Read-Host "Enterで閉じる..."
+        exit 1
+    }
+    $yearVal = [long]$Matches[1]
+    $inp = $Matches[2]
+}
+
+if ($inp -match '^(\d+)mo(.*)$') {
+    if ($Matches[1].Length -gt 4) {
+        Write-Host "${RED}❌ 入力が長すぎます（正規化後16文字以内）。${RESET}"
+        Write-Host "例: ${CYAN}90 / 1:30 / 1:30:00 / 45m / 1h / 1.5h / 1h30m20s / 1d / 1d3h${RESET}"
+        Write-Host ""
+        Read-Host "Enterで閉じる..."
+        exit 1
+    }
+    $monthVal = [long]$Matches[1]
+    $inp = $Matches[2]
+}
 
 # ── 入力文字数チェック ───────────────────────────────────
 # 正規化後16文字を超えると時間単位×乗数の乗算がInt64を超える
@@ -110,8 +148,12 @@ if ($inp.Length -gt 16) {
 $seconds = 0L
 $parsed  = $true
 
+# 0) 年・月のみ（d/h/m/s なし）
+if      ($inp -eq '' -and ($yearVal -gt 0 -or $monthVal -gt 0)) {
+    # d/h/m/s 分は 0 秒として扱う（年・月のみ指定）
+
 # 1) 整数のみ → 分
-if      ($inp -match '^(\d+)$') {
+} elseif ($inp -match '^(\d+)$') {
     $seconds = [long]$Matches[1] * 60L
 
 # 2) 小数のみ → 分（例: 1.5 → 90秒）
@@ -211,6 +253,23 @@ if (-not $parsed) {
     exit 1
 }
 
+# ── 年・月のカレンダー演算（秒への変換）──────────────────────────────
+# AddYears()/AddMonths() はカレンダーを考慮した正確な月・年の加算を行う。
+# sub_seconds は d/h/m/s 分のみの秒数（表示用に保持）。
+$subSeconds = $seconds
+if ($yearVal -gt 0 -or $monthVal -gt 0) {
+    try {
+        $_now    = Get-Date
+        $_endCal = $_now.AddYears([int]$yearVal).AddMonths([int]$monthVal)
+        $seconds = [long]($_endCal - $_now).TotalSeconds + $subSeconds
+    } catch {
+        Write-Host "${RED}❌ 設定可能な最大時間を超えています。${RESET}"
+        Write-Host ""
+        Read-Host "Enterで閉じる..."
+        exit 1
+    }
+}
+
 # ── 0秒チェック ─────────────────────────────────────────
 if ($seconds -le 0) {
     Write-Host "${RED}❌ 0秒以下の値は設定できません。${RESET}"
@@ -232,15 +291,18 @@ if ($seconds -gt $maxSeconds) {
 # ── 時刻・継続時間の表示 ─────────────────────────────────
 $nowStr = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 $endStr = (Get-Date).AddSeconds($seconds).ToString('yyyy-MM-dd HH:mm:ss')
-$mm     = [Math]::Floor(($seconds % 3600L) / 60L)
-$ss     = $seconds % 60L
-if ($seconds -ge 86400L) {
-    $dd  = [Math]::Floor($seconds / 86400L)
-    $hh  = [Math]::Floor(($seconds % 86400L) / 3600L)
-    $dur = '{0:D2}:{1:D2}:{2:D2}:{3:D2}' -f [int]$dd, [int]$hh, [int]$mm, [int]$ss
+$_dS = $subSeconds % 60L
+$_dM = [Math]::Floor(($subSeconds % 3600L) / 60L)
+$_dH = [Math]::Floor(($subSeconds % 86400L) / 3600L)
+$_dD = [Math]::Floor($subSeconds / 86400L)
+if ($yearVal -gt 0) {
+    $dur = '{0:D2}:{1:D2}:{2:D2}:{3:D2}:{4:D2}:{5:D2}' -f [int]$yearVal, [int]$monthVal, [int]$_dD, [int]$_dH, [int]$_dM, [int]$_dS
+} elseif ($monthVal -gt 0) {
+    $dur = '{0:D2}:{1:D2}:{2:D2}:{3:D2}:{4:D2}' -f [int]$monthVal, [int]$_dD, [int]$_dH, [int]$_dM, [int]$_dS
+} elseif ($subSeconds -ge 86400L) {
+    $dur = '{0:D2}:{1:D2}:{2:D2}:{3:D2}' -f [int]$_dD, [int]$_dH, [int]$_dM, [int]$_dS
 } else {
-    $hh  = [Math]::Floor($seconds / 3600L)
-    $dur = '{0:D2}:{1:D2}:{2:D2}' -f [int]$hh, [int]$mm, [int]$ss
+    $dur = '{0:D2}:{1:D2}:{2:D2}' -f [int]$_dH, [int]$_dM, [int]$_dS
 }
 
 Write-Host "${CYAN}────────────────────────────────────────${RESET}"
