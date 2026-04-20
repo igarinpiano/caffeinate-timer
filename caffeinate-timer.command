@@ -29,6 +29,9 @@ printf '%s\n' "例:"
 printf '%s\n' "  ${CYAN}90${RESET}           → 90分"
 printf '%s\n' "  ${CYAN}1:30:00${RESET}      → 1時間30分0秒"
 printf '%s\n' "  ${CYAN}1:30${RESET}         → 1分30秒"
+printf '%s\n' "  ${CYAN}1:2:3:4${RESET}      → 1日2時間3分4秒"
+printf '%s\n' "  ${CYAN}1:2:3:4:5${RESET}    → 1ヶ月2日3時間4分5秒"
+printf '%s\n' "  ${CYAN}1:2:3:4:5:6${RESET}  → 1年2ヶ月3日4時間5分6秒"
 printf '%s\n' "  ${CYAN}1y / 1year${RESET}   → 1年"
 printf '%s\n' "  ${CYAN}2mo / 2month${RESET} → 2ヶ月"
 printf '%s\n' "  ${CYAN}1d / 1day${RESET}    → 1日"
@@ -76,6 +79,13 @@ input=$(printf '%s' "$input" | sed -E \
   -e 's/secs?/s/g'     \
   -e 's/days?/d/g'     \
 )
+
+# ── 前処理③：各数値グループの先頭ゼロを除去 ──────────────────────────
+# 10# で8進数誤認は防いでいるが、文字列長チェックが先頭ゼロで
+# 誤判定しないよう正規化する（例: 000001h → 1h、00:05 → 0:5）。
+while [[ "$input" =~ (^|[^0-9])0+([0-9]) ]]; do
+  input="${input/"${BASH_REMATCH[0]}"/"${BASH_REMATCH[1]}${BASH_REMATCH[2]}"}"
+done
 
 # ── 年・月コンポーネントの抽出 ──────────────────────────────────────
 # カレンダー演算が必要なため、パターンマッチの前に y / mo を分離する。
@@ -144,6 +154,35 @@ elif [[ "$input" =~ ^([0-9]+):([0-9]+)$ ]]; then
 # 4) X:Y:Z → 時:分:秒
 elif [[ "$input" =~ ^([0-9]+):([0-9]+):([0-9]+)$ ]]; then
   seconds=$(( 10#${BASH_REMATCH[1]} * 3600 + 10#${BASH_REMATCH[2]} * 60 + 10#${BASH_REMATCH[3]} ))
+
+# 4.1) W:X:Y:Z → 日:時:分:秒
+elif [[ "$input" =~ ^([0-9]+):([0-9]+):([0-9]+):([0-9]+)$ ]]; then
+  seconds=$(( 10#${BASH_REMATCH[1]} * 86400 + 10#${BASH_REMATCH[2]} * 3600 + 10#${BASH_REMATCH[3]} * 60 + 10#${BASH_REMATCH[4]} ))
+
+# 4.2) V:W:X:Y:Z → ヶ月:日:時:分:秒
+elif [[ "$input" =~ ^([0-9]+):([0-9]+):([0-9]+):([0-9]+):([0-9]+)$ ]]; then
+  if [ "${#BASH_REMATCH[1]}" -gt 4 ]; then
+    printf '%s\n' "${RED}❌ 入力が長すぎます（月の値は4桁以内）。${RESET}"
+    printf '%s\n' "例: ${CYAN}90 / 1:30 / 1:30:00 / 1:2:3:4 / 1:2:3:4:5 / 45m / 1h / 1d${RESET}"
+    printf '\n'
+    read -r -p "Enterで閉じる..." _
+    exit 1
+  fi
+  month_val=$(( 10#${BASH_REMATCH[1]} ))
+  seconds=$(( 10#${BASH_REMATCH[2]} * 86400 + 10#${BASH_REMATCH[3]} * 3600 + 10#${BASH_REMATCH[4]} * 60 + 10#${BASH_REMATCH[5]} ))
+
+# 4.3) U:V:W:X:Y:Z → 年:ヶ月:日:時:分:秒
+elif [[ "$input" =~ ^([0-9]+):([0-9]+):([0-9]+):([0-9]+):([0-9]+):([0-9]+)$ ]]; then
+  if [ "${#BASH_REMATCH[1]}" -gt 4 ] || [ "${#BASH_REMATCH[2]}" -gt 4 ]; then
+    printf '%s\n' "${RED}❌ 入力が長すぎます（年・月の値は4桁以内）。${RESET}"
+    printf '%s\n' "例: ${CYAN}90 / 1:30 / 1:30:00 / 1:2:3:4 / 1:2:3:4:5:6 / 45m / 1h / 1d${RESET}"
+    printf '\n'
+    read -r -p "Enterで閉じる..." _
+    exit 1
+  fi
+  year_val=$(( 10#${BASH_REMATCH[1]} ))
+  month_val=$(( 10#${BASH_REMATCH[2]} ))
+  seconds=$(( 10#${BASH_REMATCH[3]} * 86400 + 10#${BASH_REMATCH[4]} * 3600 + 10#${BASH_REMATCH[5]} * 60 + 10#${BASH_REMATCH[6]} ))
 
 # 5) 小数h → 時間（例: 1.5h）
 elif [[ "$input" =~ ^([0-9]+)\.([0-9]+)h$ ]]; then

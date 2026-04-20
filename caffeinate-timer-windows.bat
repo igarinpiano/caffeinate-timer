@@ -60,6 +60,9 @@ Write-Host "例:"
 Write-Host "  ${CYAN}90${RESET}           → 90分"
 Write-Host "  ${CYAN}1:30:00${RESET}      → 1時間30分0秒"
 Write-Host "  ${CYAN}1:30${RESET}         → 1分30秒"
+Write-Host "  ${CYAN}1:2:3:4${RESET}      → 1日2時間3分4秒"
+Write-Host "  ${CYAN}1:2:3:4:5${RESET}    → 1ヶ月2日3時間4分5秒"
+Write-Host "  ${CYAN}1:2:3:4:5:6${RESET}  → 1年2ヶ月3日4時間5分6秒"
 Write-Host "  ${CYAN}1y / 1year${RESET}   → 1年"
 Write-Host "  ${CYAN}2mo / 2month${RESET} → 2ヶ月"
 Write-Host "  ${CYAN}1d / 1day${RESET}    → 1日"
@@ -101,6 +104,11 @@ $inp = $inp -replace 'months?',  'mo' `
             -replace 'seconds?', 's'  `
             -replace 'secs?',    's'  `
             -replace 'days?',    'd'
+
+# ── 前処理③：各数値グループの先頭ゼロを除去 ─────────────────────────
+# 文字列長チェックが先頭ゼロで誤判定しないよう正規化する（例: 000001h → 1h）。
+# .NET regex の後読み (?<![0-9]) で「数字以外の直後」の先頭ゼロを除去する。
+$inp = $inp -replace '(?<![0-9])0+(?=[0-9])', ''
 
 # ── 年・月コンポーネントの抽出 ──────────────────────────────────────
 # カレンダー演算が必要なため、パターンマッチの前に y / mo を分離する。
@@ -169,6 +177,35 @@ if      ($inp -eq '' -and ($yearVal -gt 0 -or $monthVal -gt 0)) {
 # 4) X:Y:Z → 時:分:秒
 } elseif ($inp -match '^(\d+):(\d+):(\d+)$') {
     $seconds = [long]$Matches[1] * 3600L + [long]$Matches[2] * 60L + [long]$Matches[3]
+
+# 4.1) W:X:Y:Z → 日:時:分:秒
+} elseif ($inp -match '^(\d+):(\d+):(\d+):(\d+)$') {
+    $seconds = [long]$Matches[1] * 86400L + [long]$Matches[2] * 3600L + [long]$Matches[3] * 60L + [long]$Matches[4]
+
+# 4.2) V:W:X:Y:Z → ヶ月:日:時:分:秒
+} elseif ($inp -match '^(\d+):(\d+):(\d+):(\d+):(\d+)$') {
+    if ($Matches[1].Length -gt 4) {
+        Write-Host "${RED}❌ 入力が長すぎます（月の値は4桁以内）。${RESET}"
+        Write-Host "例: ${CYAN}90 / 1:30 / 1:30:00 / 1:2:3:4 / 1:2:3:4:5 / 45m / 1h / 1d${RESET}"
+        Write-Host ""
+        Read-Host "Enterで閉じる..."
+        exit 1
+    }
+    $monthVal = [long]$Matches[1]
+    $seconds  = [long]$Matches[2] * 86400L + [long]$Matches[3] * 3600L + [long]$Matches[4] * 60L + [long]$Matches[5]
+
+# 4.3) U:V:W:X:Y:Z → 年:ヶ月:日:時:分:秒
+} elseif ($inp -match '^(\d+):(\d+):(\d+):(\d+):(\d+):(\d+)$') {
+    if ($Matches[1].Length -gt 4 -or $Matches[2].Length -gt 4) {
+        Write-Host "${RED}❌ 入力が長すぎます（年・月の値は4桁以内）。${RESET}"
+        Write-Host "例: ${CYAN}90 / 1:30 / 1:30:00 / 1:2:3:4 / 1:2:3:4:5:6 / 45m / 1h / 1d${RESET}"
+        Write-Host ""
+        Read-Host "Enterで閉じる..."
+        exit 1
+    }
+    $yearVal  = [long]$Matches[1]
+    $monthVal = [long]$Matches[2]
+    $seconds  = [long]$Matches[3] * 86400L + [long]$Matches[4] * 3600L + [long]$Matches[5] * 60L + [long]$Matches[6]
 
 # 5) 小数h → 時間（例: 1.5h）
 } elseif ($inp -match '^(\d+)\.(\d+)h$') {
