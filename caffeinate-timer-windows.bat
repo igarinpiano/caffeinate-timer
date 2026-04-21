@@ -1,4 +1,5 @@
 @echo off
+setlocal
 chcp 65001 >nul
 set "__CAFFEINATE_FILE=%~f0"
 powershell -ExecutionPolicy Bypass -NoProfile -Command "$t=[IO.File]::ReadAllText($env:__CAFFEINATE_FILE,[Text.Encoding]::UTF8);$si=$t.IndexOf('<#PS');$ei=$t.LastIndexOf('#>PS');if($si -lt 0 -or $ei -le $si){Write-Host 'スクリプトの抽出に失敗しました。';exit 1};& ([scriptblock]::Create($t.Substring($si+4,$ei-$si-4)))"
@@ -51,7 +52,7 @@ $RED    = "$E[0;31m"
 $RESET  = "$E[0m"
 
 # ── バージョン定数 ───────────────────────────────────────
-$CURRENT_VERSION = "v1.3.1"
+$CURRENT_VERSION = "v1.3.2"
 
 # ── 設定メニュー関数 ─────────────────────────────────────
 # Windows 版ではアップデートの自動実行は行わず、
