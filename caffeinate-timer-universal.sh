@@ -23,7 +23,7 @@ trap_handler() {
 trap trap_handler INT
 
 # ── バージョン・アップデート設定 ─────────────────────────
-CURRENT_VERSION="v1.3.0"
+CURRENT_VERSION="v1.3.1"
 _CT_VERSIONS_URL="https://raw.githubusercontent.com/igarinpiano/caffeinate-timer/main/versions.txt"
 _CT_RELEASES_BASE="https://github.com/igarinpiano/caffeinate-timer/releases/download"
 _CT_SCRIPT_FILENAME="caffeinate-timer-universal.sh"
@@ -68,7 +68,7 @@ _ct_fetch_versions() {
     return 1
   fi
   [ -n "$_content" ] || return 1
-  printf '%s' "$_content"
+  printf '%s' "$_content" | tr -d '\r'
 }
 
 # ── アップデート: ダウンロード・自己置換 ─────────────────
@@ -99,13 +99,19 @@ _ct_download_replace() {
   local _url="${_CT_RELEASES_BASE}/${_version}/${_CT_SCRIPT_FILENAME}"
 
   # 一時ファイル作成
+  # スクリプト本体と同一ディレクトリへの作成を優先し、mv のアトミック性を保証する。
+  # ディレクトリへの書き込みが不可の場合のみ /tmp にフォールバックする。
   local _tmp
-  _tmp=$(mktemp /tmp/caffeinate-timer.XXXXXX) || {
-    printf '%s\n' "${RED}❌ 一時ファイルの作成に失敗しました。/tmp の空き容量を確認してください。${RESET}"
-    printf '\n'
-    read -r -p "Enterで閉じる..." _
-    exit 1
-  }
+  local _script_dir
+  _script_dir="$(dirname "$_CT_SCRIPT_PATH")"
+  if ! _tmp=$(mktemp "${_script_dir}/.ct-update.XXXXXX" 2>/dev/null); then
+    _tmp=$(mktemp /tmp/caffeinate-timer.XXXXXX) || {
+      printf '%s\n' "${RED}❌ 一時ファイルの作成に失敗しました。ディスクの空き容量を確認してください。${RESET}"
+      printf '\n'
+      read -r -p "Enterで閉じる..." _
+      exit 1
+    }
+  fi
 
   printf '%s\n' "バージョン ${_version} をダウンロード中..."
 
