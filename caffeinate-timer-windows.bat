@@ -50,6 +50,37 @@ $YELLOW = "$E[1;33m"
 $RED    = "$E[0;31m"
 $RESET  = "$E[0m"
 
+# ── バージョン定数 ───────────────────────────────────────
+$CURRENT_VERSION = "v1.3.0"
+
+# ── 設定メニュー関数 ─────────────────────────────────────
+# Windows 版ではアップデートの自動実行は行わず、
+# GitHubへの手動ダウンロードを案内する。
+# （理由: 実行中 .bat の自己置換はリレースクリプトが必要で
+#   環境依存の問題（ExecutionPolicy / Defender 等）が多く
+#   堅牢な実装が困難なため）
+function Show-SettingsMenu {
+    Clear-Host
+    Write-Host "${BOLD}${CYAN}⚙️  設定${RESET}"
+    Write-Host "${CYAN}────────────────────────────────────────${RESET}"
+    Write-Host ""
+    Write-Host "  現在のバージョン: ${GREEN}${CURRENT_VERSION}${RESET}"
+    Write-Host ""
+    Write-Host "${CYAN}────────────────────────────────────────${RESET}"
+    Write-Host ""
+    Write-Host "  Windows 版ではアップデートを手動で行ってください。"
+    Write-Host ""
+    Write-Host "  ${BOLD}最新版のダウンロード:${RESET}"
+    Write-Host "  ${CYAN}https://github.com/igarinpiano/caffeinate-timer/releases/latest${RESET}"
+    Write-Host ""
+    Write-Host "  ${BOLD}全バージョン一覧:${RESET}"
+    Write-Host "  ${CYAN}https://github.com/igarinpiano/caffeinate-timer/releases${RESET}"
+    Write-Host ""
+    Write-Host "  ダウンロード後、このファイルと置き換えてください。"
+    Write-Host ""
+    Read-Host "Enterで閉じる..."
+}
+
 # ── ヘッダー ────────────────────────────────────────────
 Clear-Host
 Write-Host "${BOLD}${CYAN}☕  Caffeinate タイマー${RESET}"
@@ -75,9 +106,17 @@ Write-Host "  ${CYAN}1.5h${RESET}         → 1時間30分"
 Write-Host "  ${CYAN}1y2mo${RESET}        → 1年2ヶ月"
 Write-Host "  ${CYAN}1y2mo3h30m${RESET}   → 1年2ヶ月3時間30分"
 Write-Host "  ${CYAN}1d3h30m${RESET}      → 1日3時間30分"
+Write-Host "  ${CYAN}/settings${RESET}    → 設定"
 Write-Host ""
 $raw = Read-Host "入力"
 Write-Host ""
+
+# ── /settings コマンド ────────────────────────────────────
+# 前処理を通す前に検出する（スペース除去・小文字化の影響を受けないよう先に処理）
+if ($raw.Trim() -eq '/settings') {
+    Show-SettingsMenu
+    exit 0
+}
 
 # ── 前処理①：全角→半角変換 ─────────────────────────────
 # （sed の y コマンド相当をPowerShell の Replace で実現）

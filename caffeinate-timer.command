@@ -19,6 +19,320 @@ trap_handler() {
 }
 trap trap_handler INT
 
+# ── バージョン・アップデート設定 ─────────────────────────
+CURRENT_VERSION="v1.3.0"
+_CT_VERSIONS_URL="https://raw.githubusercontent.com/igarinpiano/caffeinate-timer/main/versions.txt"
+_CT_RELEASES_BASE="https://github.com/igarinpiano/caffeinate-timer/releases/download"
+_CT_SCRIPT_FILENAME="caffeinate-timer.command"
+
+# 自分自身のパスを解決（シンボリックリンク追跡、Bash 3.2 互換）
+# realpath は macOS 12.3 以降で標準搭載。それ以前は手動でディレクトリ + basename から構成する。
+if command -v realpath &>/dev/null; then
+  _CT_SCRIPT_PATH="$(realpath "$0")"
+else
+  _CT_SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
+fi
+
+# ── アップデート: バージョン文字列バリデーション ──────────
+# v + 数字.数字.数字 のみ許可。コマンドインジェクション防止のため
+# URL 組み立てに使用する前に必ず通す。
+_ct_validate_version() {
+  [[ "$1" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+}
+
+# ── アップデート: versions.txt 取得 ──────────────────────
+# curl のみ使用（macOS 標準搭載）。
+# --proto '=https' で HTTPS のみ許可（HTTP へのダウングレード防止）。
+# --max-redirs 5 でリダイレクトループを防止。
+# 取得内容が空の場合は失敗扱い。
+_ct_fetch_versions() {
+  local _content
+  _content=$(curl -fsSL \
+    --proto '=https' \
+    --max-time 15 \
+    --max-redirs 5 \
+    "$_CT_VERSIONS_URL" 2>/dev/null) || return 1
+  [ -n "$_content" ] || return 1
+  printf '%s' "$_content"
+}
+
+# ── アップデート: ダウンロード・自己置換 ─────────────────
+# 処理順: tmpファイル作成 → DL → 非空チェック → shebang確認
+#         → 実行権限付与 → アトミック mv → exec で再起動
+# 各ステップ失敗時は tmp を削除して中断（スクリプト本体は変更されない）。
+_ct_download_replace() {
+  local _version="$1"
+
+  # 再バリデーション（念のため）
+  _ct_validate_version "$_version" || {
+    printf '%s\n' "${RED}❌ 不正なバージョン文字列です。アップデートを中止します。${RESET}"
+    printf '\n'
+    read -r -p "Enterで閉じる..." _
+    exit 1
+  }
+
+  # URL はバリデーション済みバージョン文字列からのみ構成する
+  local _url="${_CT_RELEASES_BASE}/${_version}/${_CT_SCRIPT_FILENAME}"
+
+  # 一時ファイル作成
+  local _tmp
+  _tmp=$(mktemp /tmp/caffeinate-timer.XXXXXX) || {
+    printf '%s\n' "${RED}❌ 一時ファイルの作成に失敗しました。/tmp の空き容量を確認してください。${RESET}"
+    printf '\n'
+    read -r -p "Enterで閉じる..." _
+    exit 1
+  }
+
+  printf '%s\n' "バージョン ${_version} をダウンロード中..."
+
+  curl -fsSL \
+    --proto '=https' \
+    --max-time 60 \
+    --max-redirs 5 \
+    "$_url" -o "$_tmp" 2>/dev/null
+  local _curl_exit=$?
+
+  if [ "$_curl_exit" -ne 0 ]; then
+    rm -f "$_tmp"
+    printf '%s\n' "${RED}❌ ダウンロードに失敗しました。（curl 終了コード: ${_curl_exit}）${RESET}"
+    printf '%s\n' "  ・ネットワーク接続を確認してください。"
+    printf '%s\n' "  ・バージョン ${_version} がリリースに存在しない可能性があります。"
+    printf '%s\n' "  手動DL: ${_CT_RELEASES_BASE}/${_version}/${_CT_SCRIPT_FILENAME}"
+    printf '\n'
+    read -r -p "Enterで閉じる..." _
+    exit 1
+  fi
+
+  # 空ファイルチェック
+  if [ ! -s "$_tmp" ]; then
+    rm -f "$_tmp"
+    printf '%s\n' "${RED}❌ ダウンロードしたファイルが空です。アップデートを中止します。${RESET}"
+    printf '\n'
+    read -r -p "Enterで閉じる..." _
+    exit 1
+  fi
+
+  # shebang チェック（HTMLエラーページなど非スクリプトファイルの混入を防止）
+  local _first_line
+  IFS= read -r _first_line < "$_tmp"
+  case "$_first_line" in
+    '#!/bin/bash'|'#!/usr/bin/env bash'|'#!/bin/sh'|'#!/usr/bin/env sh') ;;
+    *)
+      rm -f "$_tmp"
+      printf '%s\n' "${RED}❌ ダウンロードしたファイルの形式が不正です。アップデートを中止します。${RESET}"
+      printf '%s\n' "  （予期しない内容: ${_first_line:0:60}）"
+      printf '\n'
+      read -r -p "Enterで閉じる..." _
+      exit 1
+      ;;
+  esac
+
+  # 実行権限付与
+  chmod +x "$_tmp" || {
+    rm -f "$_tmp"
+    printf '%s\n' "${RED}❌ 実行権限の付与に失敗しました。アップデートを中止します。${RESET}"
+    printf '\n'
+    read -r -p "Enterで閉じる..." _
+    exit 1
+  }
+
+  # アトミック mv で自己置換
+  # 同一ファイルシステム内の mv は inode の付け替えで完了するため
+  # 書き換え途中の壊れた状態が生じない。
+  mv "$_tmp" "$_CT_SCRIPT_PATH" || {
+    rm -f "$_tmp"
+    printf '%s\n' "${RED}❌ ファイルの書き換えに失敗しました。アップデートを中止します。${RESET}"
+    printf '%s\n' "  ・書き込み権限を確認してください。"
+    printf '%s\n' "  ・スクリプトのパス: ${_CT_SCRIPT_PATH}"
+    printf '\n'
+    read -r -p "Enterで閉じる..." _
+    exit 1
+  }
+
+  printf '%s\n' "${GREEN}✅ バージョン ${_version} にアップデートしました。再起動します。${RESET}"
+  sleep 1
+
+  # exec で現プロセスを新バージョンに置き換えて再起動
+  exec "$_CT_SCRIPT_PATH" || {
+    printf '%s\n' "${RED}❌ 再起動に失敗しました。スクリプトを手動で再度起動してください。${RESET}"
+    printf '%s\n' "  パス: ${_CT_SCRIPT_PATH}"
+    printf '\n'
+    read -r -p "Enterで閉じる..." _
+    exit 1
+  }
+}
+
+# ── アップデート: 自動アップデート (/update) ─────────────
+_ct_auto_update() {
+  trap 'printf "\n${YELLOW}⚠️  アップデートをキャンセルしました。${RESET}\n\n"; read -r -p "Enterで閉じる..." _; exit 0' INT
+
+  printf '\n'
+  printf '%s\n' "バージョン情報を取得中..."
+
+  local _vc
+  _vc=$(_ct_fetch_versions) || {
+    printf '%s\n' "${RED}❌ バージョン情報の取得に失敗しました。ネットワーク接続を確認してください。${RESET}"
+    printf '\n'
+    read -r -p "Enterで閉じる..." _
+    exit 1
+  }
+
+  # 1行目の第1フィールドが最新バージョン
+  local _latest
+  _latest=$(printf '%s\n' "$_vc" | head -1 | awk '{print $1}')
+
+  # バージョン文字列検証
+  _ct_validate_version "$_latest" || {
+    printf '%s\n' "${RED}❌ 取得したバージョン情報が不正です。versions.txt を確認してください。${RESET}"
+    printf '\n'
+    read -r -p "Enterで閉じる..." _
+    exit 1
+  }
+
+  if [ "$_latest" = "$CURRENT_VERSION" ]; then
+    printf '%s\n' "${GREEN}✅ すでに最新版（${CURRENT_VERSION}）です。${RESET}"
+    printf '\n'
+    read -r -p "Enterで戻る..." _
+    exec "$_CT_SCRIPT_PATH" || exit 0
+  fi
+
+  printf '%s\n' "最新版: ${GREEN}${_latest}${RESET}（現在: ${CURRENT_VERSION}）"
+  printf '\n'
+  read -r -p "アップデートしますか？ [y/N]: " _confirm
+  case "$_confirm" in
+    y|Y) ;;
+    *)
+      exec "$_CT_SCRIPT_PATH" || exit 0
+      ;;
+  esac
+
+  _ct_download_replace "$_latest"
+}
+
+# ── アップデート: 手動バージョン選択 (/update --manual) ──
+_ct_manual_update() {
+  trap 'printf "\n${YELLOW}⚠️  アップデートをキャンセルしました。${RESET}\n\n"; read -r -p "Enterで閉じる..." _; exit 0' INT
+
+  printf '\n'
+  printf '%s\n' "バージョン一覧を取得中..."
+
+  local _vc
+  _vc=$(_ct_fetch_versions) || {
+    printf '%s\n' "${RED}❌ バージョン情報の取得に失敗しました。ネットワーク接続を確認してください。${RESET}"
+    printf '\n'
+    read -r -p "Enterで閉じる..." _
+    exit 1
+  }
+
+  # versions.txt をパースして配列に格納（bash 3.2 互換）
+  # 不正な行・100行超過分はスキップ
+  local _ct_vers=()
+  local _ct_descs=()
+  local _ct_line
+  while IFS= read -r _ct_line; do
+    [ -z "$_ct_line" ] && continue
+    [ "${#_ct_vers[@]}" -ge 100 ] && break
+    local _ct_v
+    _ct_v=$(printf '%s' "$_ct_line" | awk '{print $1}')
+    local _ct_d
+    _ct_d=$(printf '%s' "$_ct_line" | cut -d' ' -f2-)
+    _ct_validate_version "$_ct_v" || continue
+    _ct_vers+=("$_ct_v")
+    _ct_descs+=("$_ct_d")
+  done <<< "$_vc"
+
+  if [ "${#_ct_vers[@]}" -eq 0 ]; then
+    printf '%s\n' "${RED}❌ 利用可能なバージョンが見つかりませんでした。${RESET}"
+    printf '\n'
+    read -r -p "Enterで閉じる..." _
+    exit 1
+  fi
+
+  printf '\n'
+  printf '%s\n' "${BOLD}利用可能なバージョン:${RESET}"
+  printf '\n'
+  local _ct_i
+  for (( _ct_i=0; _ct_i<${#_ct_vers[@]}; _ct_i++ )); do
+    local _ct_marker=""
+    [ "${_ct_vers[$_ct_i]}" = "$CURRENT_VERSION" ] && _ct_marker=" ${YELLOW}← 現在${RESET}"
+    printf "  ${CYAN}[$(( _ct_i + 1 ))]${RESET}  %-10s  %s%b\n" \
+      "${_ct_vers[$_ct_i]}" "${_ct_descs[$_ct_i]}" "$_ct_marker"
+  done
+  printf '\n'
+
+  read -r -p "番号を入力 (Ctrl+C でキャンセル): " _ct_sel
+  printf '\n'
+
+  # 入力検証: 数字のみ・1〜N の範囲内
+  if ! [[ "$_ct_sel" =~ ^[0-9]+$ ]]; then
+    printf '%s\n' "${RED}❌ 数字を入力してください。${RESET}"
+    printf '\n'
+    read -r -p "Enterで閉じる..." _
+    exit 1
+  fi
+
+  local _ct_idx=$(( _ct_sel - 1 ))
+  if [ "$_ct_idx" -lt 0 ] || [ "$_ct_idx" -ge "${#_ct_vers[@]}" ]; then
+    printf '%s\n' "${RED}❌ 範囲外の番号です（1〜${#_ct_vers[@]}）。${RESET}"
+    printf '\n'
+    read -r -p "Enterで閉じる..." _
+    exit 1
+  fi
+
+  local _ct_target="${_ct_vers[$_ct_idx]}"
+
+  if [ "$_ct_target" = "$CURRENT_VERSION" ]; then
+    printf '%s\n' "${GREEN}✅ すでにバージョン ${CURRENT_VERSION} です。${RESET}"
+    printf '\n'
+    read -r -p "Enterで戻る..." _
+    exec "$_CT_SCRIPT_PATH" || exit 0
+  fi
+
+  printf '%s\n' "バージョン ${_ct_target} に切り替えます。（現在: ${CURRENT_VERSION}）"
+  printf '\n'
+  read -r -p "続行しますか？ [y/N]: " _ct_confirm
+  case "$_ct_confirm" in
+    y|Y) ;;
+    *)
+      exec "$_CT_SCRIPT_PATH" || exit 0
+      ;;
+  esac
+
+  _ct_download_replace "$_ct_target"
+}
+
+# ── 設定メニュー (/settings) ─────────────────────────────
+_ct_show_settings() {
+  trap 'printf "\n${YELLOW}⚠️  キャンセルしました。${RESET}\n\n"; read -r -p "Enterで閉じる..." _; exit 0' INT
+
+  clear
+  printf '%s\n' "${BOLD}${CYAN}⚙️  設定${RESET}"
+  printf '%s\n' "${CYAN}────────────────────────────────────────${RESET}"
+  printf '\n'
+  printf '%s\n' "  現在のバージョン: ${GREEN}${CURRENT_VERSION}${RESET}"
+  printf '\n'
+  printf '%s\n' "  ${CYAN}/update${RESET}           最新版に自動アップデート"
+  printf '%s\n' "  ${CYAN}/update --manual${RESET}  バージョンを選んでアップデート/ダウングレード"
+  printf '%s\n' "  ${CYAN}/back${RESET}             メインメニューに戻る"
+  printf '\n'
+  read -r -p "入力: " _scmd
+  printf '\n'
+
+  case "$_scmd" in
+    "/update")          _ct_auto_update ;;
+    "/update --manual") _ct_manual_update ;;
+    "/back")
+      exec "$_CT_SCRIPT_PATH" || exit 0
+      ;;
+    *)
+      printf '%s\n' "${RED}❌ 不明なコマンドです。${RESET}"
+      printf '\n'
+      read -r -p "Enterで閉じる..." _
+      exit 1
+      ;;
+  esac
+}
+
 # ── ヘッダー ────────────────────────────────────────────
 clear
 printf '%s\n' "${BOLD}${CYAN}☕  Caffeinate タイマー${RESET}"
@@ -44,9 +358,17 @@ printf '%s\n' "  ${CYAN}1.5h${RESET}         → 1時間30分"
 printf '%s\n' "  ${CYAN}1y2mo${RESET}        → 1年2ヶ月"
 printf '%s\n' "  ${CYAN}1y2mo3h30m${RESET}   → 1年2ヶ月3時間30分"
 printf '%s\n' "  ${CYAN}1d3h30m${RESET}      → 1日3時間30分"
+printf '%s\n' "  ${CYAN}/settings${RESET}    → 設定"
 printf '\n'
 read -r -p "入力: " input
 printf '\n'
+
+# ── /settings コマンド ────────────────────────────────────
+# 前処理を通す前に検出する（スペース除去・小文字化の影響を受けないよう先に処理）
+if [ "$input" = "/settings" ]; then
+  _ct_show_settings
+  exit 0
+fi
 
 # ── 前処理①：全角→半角変換（sed s コマンドで1文字ずつ）─
 # ※ sed の y コマンドはバイト長一致が必要なため、
