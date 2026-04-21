@@ -20,7 +20,7 @@ trap_handler() {
 trap trap_handler INT
 
 # ── バージョン・アップデート設定 ─────────────────────────
-CURRENT_VERSION="v1.3.1"
+CURRENT_VERSION="v1.3.2"
 _CT_VERSIONS_URL="https://raw.githubusercontent.com/igarinpiano/caffeinate-timer/main/versions.txt"
 _CT_RELEASES_BASE="https://github.com/igarinpiano/caffeinate-timer/releases/download"
 _CT_SCRIPT_FILENAME="caffeinate-timer.command"
@@ -133,8 +133,11 @@ _ct_download_replace() {
       ;;
   esac
 
-  # 実行権限付与
-  chmod +x "$_tmp" || {
+  # 元ファイルのパーミッションを取得し、新ファイルに引き継ぐ
+  # stat が失敗した場合は 755 をデフォルトとする
+  local _orig_perms
+  _orig_perms=$(stat -f "%A" "$_CT_SCRIPT_PATH" 2>/dev/null) || _orig_perms="755"
+  chmod "$_orig_perms" "$_tmp" || {
     rm -f "$_tmp"
     printf '%s\n' "${RED}❌ 実行権限の付与に失敗しました。アップデートを中止します。${RESET}"
     printf '\n'
@@ -142,18 +145,21 @@ _ct_download_replace() {
     exit 1
   }
 
-  # アトミック mv で自己置換
-  # 同一ファイルシステム内の mv は inode の付け替えで完了するため
-  # 書き換え途中の壊れた状態が生じない。
-  mv "$_tmp" "$_CT_SCRIPT_PATH" || {
+  # 自己置換: 同一ファイルシステム内では mv（アトミック）を優先する。
+  # /tmp フォールバック時など異なるファイルシステムでは mv が失敗するため、
+  # cp + rm にフォールバックしてクロスデバイスエラーを回避する。
+  if ! mv "$_tmp" "$_CT_SCRIPT_PATH" 2>/dev/null; then
+    cp "$_tmp" "$_CT_SCRIPT_PATH" 2>/dev/null || {
+      rm -f "$_tmp"
+      printf '%s\n' "${RED}❌ ファイルの書き換えに失敗しました。アップデートを中止します。${RESET}"
+      printf '%s\n' "  ・書き込み権限を確認してください。"
+      printf '%s\n' "  ・スクリプトのパス: ${_CT_SCRIPT_PATH}"
+      printf '\n'
+      read -r -p "Enterで閉じる..." _
+      exit 1
+    }
     rm -f "$_tmp"
-    printf '%s\n' "${RED}❌ ファイルの書き換えに失敗しました。アップデートを中止します。${RESET}"
-    printf '%s\n' "  ・書き込み権限を確認してください。"
-    printf '%s\n' "  ・スクリプトのパス: ${_CT_SCRIPT_PATH}"
-    printf '\n'
-    read -r -p "Enterで閉じる..." _
-    exit 1
-  }
+  fi
 
   printf '%s\n' "${GREEN}✅ バージョン ${_version} にアップデートしました。再起動します。${RESET}"
   sleep 1
