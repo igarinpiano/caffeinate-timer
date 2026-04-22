@@ -20,7 +20,7 @@ trap_handler() {
 trap trap_handler INT
 
 # ── バージョン・アップデート設定 ─────────────────────────
-CURRENT_VERSION="v1.3.2"
+CURRENT_VERSION="v1.3.3"
 _CT_VERSIONS_URL="https://raw.githubusercontent.com/igarinpiano/caffeinate-timer/main/versions.txt"
 _CT_RELEASES_BASE="https://github.com/igarinpiano/caffeinate-timer/releases/download"
 _CT_SCRIPT_FILENAME="caffeinate-timer.command"
@@ -89,14 +89,17 @@ _ct_download_replace() {
     }
   fi
 
-  printf '%s\n' "バージョン ${_version} をダウンロード中..."
+  printf '%s\n' "  ${BOLD}${_version}${RESET} をダウンロードしています..."
 
-  curl -fsSL \
+  curl -fL \
+    --progress-bar \
     --proto '=https' \
     --max-time 60 \
     --max-redirs 5 \
-    "$_url" -o "$_tmp" 2>/dev/null
+    "$_url" -o "$_tmp"
   local _curl_exit=$?
+
+  printf '\n'
 
   if [ "$_curl_exit" -ne 0 ]; then
     rm -f "$_tmp"
