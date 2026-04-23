@@ -23,7 +23,7 @@ trap_handler() {
 trap trap_handler INT
 
 # ── バージョン・アップデート設定 ─────────────────────────
-CURRENT_VERSION="v1.3.4"
+CURRENT_VERSION="v1.3.5"
 _CT_VERSIONS_URL="https://raw.githubusercontent.com/igarinpiano/caffeinate-timer/main/versions.txt"
 _CT_RELEASES_BASE="https://github.com/igarinpiano/caffeinate-timer/releases/download"
 _CT_SCRIPT_FILENAME="caffeinate-timer-universal.sh"
@@ -73,7 +73,7 @@ _ct_fetch_versions() {
 
 # ── アップデート: ダウンロード・自己置換 ─────────────────
 # 処理順: tmpファイル作成 → DL（curl 優先・wget フォールバック）
-#         → 非空チェック → shebang確認 → 実行権限付与
+#         → 非空チェック → shebang確認 → SHA-256検証 → 実行権限付与
 #         → アトミック mv → exec で再起動
 # 各ステップ失敗時は tmp を削除して中断（スクリプト本体は変更されない）。
 _ct_download_replace() {
@@ -174,6 +174,57 @@ _ct_download_replace() {
       ;;
   esac
 
+  # SHA-256 整合性検証（リリースの checksums.txt を参照）
+  # ハッシュが一致しない場合はアップデートを中止する。
+  # checksums.txt が取得できない場合（古いリリースへのダウングレード等）は
+  # 警告を表示して続行する（後方互換性）。
+  local _cs_url="${_CT_RELEASES_BASE}/${_version}/checksums.txt"
+  local _cs_content=""
+  if command -v curl &>/dev/null; then
+    _cs_content=$(curl -fsSL \
+      --proto '=https' \
+      --max-time 15 \
+      --max-redirs 5 \
+      "$_cs_url" 2>/dev/null | tr -d '\r')
+  elif command -v wget &>/dev/null; then
+    _cs_content=$(wget -qO- \
+      --https-only \
+      --timeout=15 \
+      --max-redirect=5 \
+      "$_cs_url" 2>/dev/null | tr -d '\r')
+  fi
+  if [ -n "$_cs_content" ]; then
+    local _expected_hash=""
+    _expected_hash=$(printf '%s\n' "$_cs_content" | awk -v fn="$_CT_SCRIPT_FILENAME" '{
+      sub(/^\.\//, "", $2)
+      if ($2 == fn && length($1) == 64 && $1 ~ /^[0-9a-f]+$/) { print $1; exit }
+    }')
+    if [ -n "$_expected_hash" ] && [[ "$_expected_hash" =~ ^[0-9a-f]{64}$ ]]; then
+      local _actual_hash=""
+      if command -v shasum &>/dev/null; then
+        _actual_hash=$(shasum -a 256 "$_tmp" | awk '{print $1}')
+      elif command -v sha256sum &>/dev/null; then
+        _actual_hash=$(sha256sum "$_tmp" | awk '{print $1}')
+      fi
+      if [ -n "$_actual_hash" ]; then
+        if [ "$_actual_hash" != "$_expected_hash" ]; then
+          rm -f "$_tmp"
+          printf '%s\n' "${RED}❌ ファイルの整合性検証に失敗しました。アップデートを中止します。${RESET}"
+          printf '\n'
+          read -r -p "Enterで閉じる..." _
+          exit 1
+        fi
+        printf '%s\n' "${GREEN}✅ 整合性を確認しました（SHA-256）。${RESET}"
+      else
+        printf '%s\n' "${YELLOW}⚠️  SHA-256 検証ツールが見つかりません。検証をスキップします。${RESET}"
+      fi
+    else
+      printf '%s\n' "${YELLOW}⚠️  このバージョンのチェックサムが見つかりません。検証をスキップします。${RESET}"
+    fi
+  else
+    printf '%s\n' "${YELLOW}⚠️  チェックサムファイルを取得できませんでした。検証をスキップします。${RESET}"
+  fi
+
   # 元ファイルのパーミッションを取得し、新ファイルに引き継ぐ
   # macOS (BSD stat): stat -f "%A" / Linux (GNU stat): stat -c "%a"
   # stat が失敗した場合は 755 をデフォルトとする
@@ -195,15 +246,22 @@ _ct_download_replace() {
   # /tmp フォールバック時など異なるファイルシステムでは mv が失敗するため、
   # cp + rm にフォールバックしてクロスデバイスエラーを回避する。
   if ! mv "$_tmp" "$_CT_SCRIPT_PATH" 2>/dev/null; then
-    cp "$_tmp" "$_CT_SCRIPT_PATH" 2>/dev/null || {
-      rm -f "$_tmp"
+    # クロスデバイス mv 失敗時: 実行中スクリプトへの直接 cp は "Text file busy" になる
+    # 環境があるため、先に rm で既存のエントリ（inode）を解放してから cp する。
+    # これにより、シンボリックリンク経由でのリンク先の意図しない上書きも防止できる。
+    # rm に失敗しても cp を試みる（エラーは cp 側でキャッチ）。
+    # rm 成功後に cp が失敗した場合はダウンロード済みファイルのパスを表示して
+    # ユーザーが手動で回復できるようにする（tmp を削除しない）。
+    rm -f "$_CT_SCRIPT_PATH" 2>/dev/null
+    if ! cp "$_tmp" "$_CT_SCRIPT_PATH" 2>/dev/null; then
       printf '%s\n' "${RED}❌ ファイルの書き換えに失敗しました。アップデートを中止します。${RESET}"
       printf '%s\n' "  ・書き込み権限を確認してください。"
       printf '%s\n' "  ・スクリプトのパス: ${_CT_SCRIPT_PATH}"
+      printf '%s\n' "  ・ダウンロード済みファイル: ${_tmp}（手動でコピーして利用可能）"
       printf '\n'
       read -r -p "Enterで閉じる..." _
       exit 1
-    }
+    fi
     rm -f "$_tmp"
   fi
 
