@@ -52,7 +52,160 @@ $RED    = "$E[0;31m"
 $RESET  = "$E[0m"
 
 # ── バージョン定数 ───────────────────────────────────────
-$CURRENT_VERSION = "v1.3.5"
+$CURRENT_VERSION = "v1.4.0"
+
+# ── デスクトップ通知（正常終了時のみ呼び出す）────────────
+# System.Windows.Forms.NotifyIcon によるバルーン通知。
+# テキストはハードコードされており、ユーザー入力を含まない。
+# 失敗しても処理を継続する。
+function Send-CaffeinateNotification {
+    try {
+        Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue
+        Add-Type -AssemblyName System.Drawing       -ErrorAction SilentlyContinue
+        $n = New-Object System.Windows.Forms.NotifyIcon
+        try { $n.Icon = [System.Drawing.SystemIcons]::Information } catch {}
+        $n.BalloonTipTitle = "Caffeinate Timer"
+        $n.BalloonTipText  = "スリープ防止が終了しました。"
+        $n.Visible = $true
+        $n.ShowBalloonTip(5000)
+        Start-Sleep -Milliseconds 200
+        $n.Dispose()
+    } catch {}
+}
+
+# ── /wait モード: プロセス監視 ───────────────────────────
+# 引数: プロセス名または PID
+# セキュリティ:
+#   PID        — 純粋な整数として検証後、Get-Process -Id の引数に渡す。
+#   プロセス名 — 英数字・ドット・ハイフン・アンダースコアのみ許可（最大64文字）。
+#                Get-Process -Name の引数に渡す。いずれもコマンドインジェクションなし。
+function Start-WaitMode {
+    param([string]$Target)
+    $Target = $Target.Trim()
+
+    if ([string]::IsNullOrEmpty($Target)) {
+        Write-Host "${RED}❌ /wait の後にプロセス名またはPIDを指定してください。${RESET}"
+        Write-Host "例: ${CYAN}/wait notepad${RESET}  または  ${CYAN}/wait 1234${RESET}"
+        Write-Host ""
+        Read-Host "Enterで閉じる..."
+        return
+    }
+
+    $waitByPid = $false
+    $waitPid   = 0L
+    $waitName  = ""
+
+    if ($Target -match '^\d+$') {
+        # ── PID モード ──────────────────────────────────────
+        # [long] にキャストして整数オーバーフローを防止。
+        # Windows の最大 PID は 4194304（2^22）。
+        $waitPid = [long]$Target
+        if ($waitPid -le 0 -or $waitPid -gt 4194304) {
+            Write-Host "${RED}❌ 無効なPIDです（1〜4194304）。${RESET}"
+            Write-Host ""
+            Read-Host "Enterで閉じる..."
+            return
+        }
+        $waitByPid = $true
+        $procCheck = $null
+        try { $procCheck = Get-Process -Id ([int]$waitPid) -ErrorAction SilentlyContinue } catch {}
+        if ($null -eq $procCheck) {
+            Write-Host "${RED}❌ PID ${waitPid} のプロセスが見つかりません。${RESET}"
+            Write-Host ""
+            Read-Host "Enterで閉じる..."
+            return
+        }
+    } elseif ($Target -match '^[a-zA-Z0-9._-]+$' -and $Target.Length -le 64) {
+        # ── プロセス名モード ────────────────────────────────
+        $waitName  = $Target
+        $procCheck = $null
+        try { $procCheck = Get-Process -Name $waitName -ErrorAction SilentlyContinue } catch {}
+        if ($null -eq $procCheck) {
+            Write-Host "${RED}❌ プロセス '${waitName}' が見つかりません。${RESET}"
+            Write-Host ""
+            Read-Host "Enterで閉じる..."
+            return
+        }
+    } else {
+        Write-Host "${RED}❌ プロセス名に使用できない文字が含まれています。${RESET}"
+        Write-Host "  英数字・ドット（.）・ハイフン（-）・アンダースコア（_）のみ使用できます（最大64文字）。"
+        Write-Host "  スペースを含む名前の場合は PID で指定してください。"
+        Write-Host ""
+        Read-Host "Enterで閉じる..."
+        return
+    }
+
+    $wTarget = if ($waitByPid) { "PID $waitPid" } else { "'$waitName'" }
+
+    Write-Host "${CYAN}────────────────────────────────────────${RESET}"
+    Write-Host "  ${BOLD}監視対象:${RESET} ${CYAN}${wTarget}${RESET}"
+    Write-Host "${CYAN}────────────────────────────────────────${RESET}"
+    Write-Host ""
+    Write-Host "${YELLOW}💡 スリープを防止しています... (Ctrl+C で中断)${RESET}"
+    Write-Host ""
+
+    try { [WinPwr]::Prevent() } catch {}
+    try { [Console]::TreatControlCAsInput = $true } catch {}
+
+    $wStart      = Get-Date
+    $wTick       = 0
+    $interrupted = $false
+    $alive       = $true
+
+    try {
+        while ($alive) {
+            $elapsed = [long][Math]::Floor(((Get-Date) - $wStart).TotalSeconds)
+            $eH = [int][Math]::Floor($elapsed / 3600)
+            $eM = [int][Math]::Floor(($elapsed % 3600) / 60)
+            $eS = [int]($elapsed % 60)
+            Write-Host -NoNewline ("`r  ⏳ ${wTarget} の終了を待機中...  経過時間: {0:D2}:{1:D2}:{2:D2}   " -f $eH, $eM, $eS)
+
+            Start-Sleep -Milliseconds 200
+
+            # Ctrl+C 検知
+            try {
+                while ([Console]::KeyAvailable) {
+                    $key = [Console]::ReadKey($true)
+                    if ($key.Key -eq 'C' -and ($key.Modifiers -band [ConsoleModifiers]::Control)) {
+                        $interrupted = $true
+                        break
+                    }
+                }
+            } catch {}
+            if ($interrupted) { break }
+
+            # 3秒ごと（15回 × 200ms）にプロセスの生存確認
+            $wTick++
+            if ($wTick -ge 15) {
+                $wTick     = 0
+                $procCheck = $null
+                try {
+                    if ($waitByPid) {
+                        $procCheck = Get-Process -Id ([int]$waitPid) -ErrorAction SilentlyContinue
+                    } else {
+                        $procCheck = Get-Process -Name $waitName -ErrorAction SilentlyContinue
+                    }
+                } catch {}
+                if ($null -eq $procCheck) { $alive = $false }
+            }
+        }
+    } finally {
+        try { [Console]::TreatControlCAsInput = $false } catch {}
+        try { [WinPwr]::Allow() } catch {}
+    }
+
+    Write-Host ""
+
+    if ($interrupted) {
+        Write-Host "${YELLOW}⚠️  中断されました。スリープ防止を解除します。${RESET}"
+        Write-Host ""
+    } else {
+        Send-CaffeinateNotification
+        Write-Host "${GREEN}✅ プロセスが終了しました。スリープ防止を解除します。 ($(Get-Date -Format 'HH:mm:ss'))${RESET}"
+        Write-Host ""
+    }
+    Read-Host "Enterで閉じる..."
+}
 
 # ── 設定メニュー関数 ─────────────────────────────────────
 # Windows 版ではアップデートの自動実行は行わず、
@@ -107,6 +260,8 @@ Write-Host "  ${CYAN}1.5h${RESET}         → 1時間30分"
 Write-Host "  ${CYAN}1y2mo${RESET}        → 1年2ヶ月"
 Write-Host "  ${CYAN}1y2mo3h30m${RESET}   → 1年2ヶ月3時間30分"
 Write-Host "  ${CYAN}1d3h30m${RESET}      → 1日3時間30分"
+Write-Host "  ${CYAN}/wait <名前>${RESET}  → プロセス終了まで待機"
+Write-Host "  ${CYAN}/bg <時間>${RESET}    → バックグラウンドで実行"
 Write-Host "  ${CYAN}/settings${RESET}    → 設定"
 Write-Host ""
 $raw = Read-Host "入力"
@@ -117,6 +272,31 @@ Write-Host ""
 if ($raw.Trim() -eq '/settings') {
     Show-SettingsMenu
     exit 0
+}
+
+# ── /wait コマンド ─────────────────────────────────────────
+# 前処理を通す前に検出する。ターゲットはプロセス名/PIDなので
+# 時間文字列の正規化パイプラインを通さない。
+$trimmedRaw = $raw.Trim()
+if ($trimmedRaw -match '^/wait( .+)?$') {
+    $waitArg = if ($Matches[1]) { $Matches[1].Trim() } else { '' }
+    Start-WaitMode -Target $waitArg
+    exit 0
+}
+
+# ── /bg プレフィックス ─────────────────────────────────────
+# /bg <時間> の形式を検出し、フラグを立てて時間部分のみ以降の処理に渡す。
+# /bg 単体（時間なし）はエラー。
+$bgMode = $false
+if ($trimmedRaw -like '/bg *') {
+    $bgMode = $true
+    $raw    = $trimmedRaw.Substring(4)   # '/bg ' = 4 文字
+} elseif ($trimmedRaw -eq '/bg') {
+    Write-Host "${RED}❌ /bg の後に時間を指定してください。${RESET}"
+    Write-Host "例: ${CYAN}/bg 90${RESET}  または  ${CYAN}/bg 1h30m${RESET}"
+    Write-Host ""
+    Read-Host "Enterで閉じる..."
+    exit 1
 }
 
 # ── 前処理①：全角→半角変換 ─────────────────────────────
@@ -391,6 +571,48 @@ Write-Host "  ${BOLD}終了時刻:${RESET} ${GREEN}${endStr}${RESET}"
 Write-Host "  ${BOLD}継続時間:${RESET} ${CYAN}${dur}${RESET}  (${seconds}秒)"
 Write-Host "${CYAN}────────────────────────────────────────${RESET}"
 Write-Host ""
+
+# ── /bg モード: バックグラウンドで実行 ──────────────────
+# $seconds は検証済み [long] 整数のみをスクリプト文字列に埋め込む。
+# base64 エンコードで -EncodedCommand に渡すため、インジェクション不可。
+# 子プロセス内で使用する WinPwr クラスを WinPwrBg と命名し、
+# 親プロセス内の WinPwr と名前衝突しないようにする（別プロセスのため
+# 実際は衝突しないが、コードの意図を明確にするため）。
+if ($bgMode) {
+    Write-Host "${YELLOW}🔄 バックグラウンドで実行します。終了時に通知が届きます。${RESET}"
+    Write-Host ""
+    $bgScript = `
+        "Add-Type -TypeDefinition 'using System.Runtime.InteropServices; public static class WinPwrBg { [DllImport(""kernel32.dll"")] public static extern uint SetThreadExecutionState(uint f); public static void Prevent(){ SetThreadExecutionState(0x80000003u); } public static void Allow(){ SetThreadExecutionState(0x80000000u); } }' -Language CSharp -ErrorAction SilentlyContinue`n" + `
+        "[WinPwrBg]::Prevent()`n" + `
+        "Start-Sleep -Seconds $seconds`n" + `
+        "[WinPwrBg]::Allow()`n" + `
+        "Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue`n" + `
+        "Add-Type -AssemblyName System.Drawing -ErrorAction SilentlyContinue`n" + `
+        "`$n = New-Object System.Windows.Forms.NotifyIcon`n" + `
+        "try { `$n.Icon = [System.Drawing.SystemIcons]::Information } catch {}`n" + `
+        "`$n.BalloonTipTitle = 'Caffeinate Timer'`n" + `
+        "`$n.BalloonTipText  = 'スリープ防止が終了しました。'`n" + `
+        "`$n.Visible = `$true`n" + `
+        "`$n.ShowBalloonTip(5000)`n" + `
+        "Start-Sleep -Milliseconds 6000`n" + `
+        "`$n.Dispose()"
+    $bgBytes   = [System.Text.Encoding]::Unicode.GetBytes($bgScript)
+    $bgEncoded = [Convert]::ToBase64String($bgBytes)
+    try {
+        Start-Process `
+            -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+            -ArgumentList "-ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -EncodedCommand $bgEncoded" `
+            -WindowStyle Hidden `
+            -ErrorAction Stop
+        Write-Host "${GREEN}✅ バックグラウンドで起動しました。このウィンドウは閉じても構いません。${RESET}"
+    } catch {
+        Write-Host "${RED}❌ バックグラウンド起動に失敗しました。${RESET}"
+    }
+    Write-Host ""
+    Read-Host "Enterで閉じる..."
+    exit 0
+}
+
 Write-Host "${YELLOW}💡 スリープを防止しています... (Ctrl+C で中断)${RESET}"
 Write-Host ""
 
@@ -405,12 +627,32 @@ try { [Console]::TreatControlCAsInput = $true } catch {}
 
 $targetTime  = (Get-Date).AddSeconds($seconds)
 $interrupted = $false
+$lastSec     = -1
 
 # ── try/finally でクリーンアップを保証 ──────────────────
 # 異常終了・Terminating Error 発生時でも TreatControlCAsInput の
 # リセットとスリープ防止の解除が必ず実行されるようにする。
 try {
     while ((Get-Date) -lt $targetTime) {
+        # ── カウントダウン表示（1秒ごとに更新）──────────────
+        $remain = [long][Math]::Ceiling(($targetTime - (Get-Date)).TotalSeconds)
+        if ($remain -lt 0) { $remain = 0 }
+        $curSec = [int]$remain
+        if ($curSec -ne $lastSec) {
+            $lastSec = $curSec
+            $rH      = [int][Math]::Floor($remain / 3600)
+            $rM      = [int][Math]::Floor(($remain % 3600) / 60)
+            $rS      = [int]($remain % 60)
+            $elapsed = $seconds - $remain
+            if ($elapsed -lt 0) { $elapsed = 0 }
+            $filled  = if ($seconds -gt 0) { [int][Math]::Floor($elapsed * 20 / $seconds) } else { 20 }
+            if ($filled -gt 20) { $filled = 20 }
+            $pct = if ($seconds -gt 0) { [int][Math]::Floor($elapsed * 100 / $seconds) } else { 100 }
+            if ($pct -gt 100) { $pct = 100 }
+            $bar = ('█' * $filled) + ('░' * (20 - $filled))
+            Write-Host -NoNewline ("`r  ${GREEN}▶${RESET} [$bar] $pct%  残り: {0:D2}:{1:D2}:{2:D2}   " -f $rH, $rM, $rS)
+        }
+
         Start-Sleep -Milliseconds 200
         try {
             # バッファに溜まったキー入力をすべて消化（ドレイン）する。
@@ -436,11 +678,12 @@ try {
 }
 
 # ── 正常終了 / 中断 ──────────────────────────────────────
+Write-Host ""
 if ($interrupted) {
-    Write-Host ""
     Write-Host "${YELLOW}⚠️  中断されました。スリープ防止を解除します。${RESET}"
     Write-Host ""
 } else {
+    Send-CaffeinateNotification
     Write-Host "${GREEN}✅ 終了しました。 ($(Get-Date -Format 'HH:mm:ss'))${RESET}"
     Write-Host ""
 }

@@ -10,9 +10,18 @@ RED=$'\033[0;31m'
 RESET=$'\033[0m'
 
 # ── Ctrl+C ハンドラ ─────────────────────────────────────
+# _caffeinate_pid はバックグラウンドで起動した caffeinate の PID。
+# trap 発火時にカウントダウン行を消去し、caffeinate を終了させる。
+_caffeinate_pid=""
 trap_handler() {
+  printf '\r\033[K'
   printf '\n'
   printf '%s\n' "${YELLOW}⚠️  中断されました。スリープ防止を解除します。${RESET}"
+  if [ -n "$_caffeinate_pid" ]; then
+    kill "$_caffeinate_pid" 2>/dev/null
+    wait "$_caffeinate_pid" 2>/dev/null
+    _caffeinate_pid=""
+  fi
   printf '\n'
   read -r -p "Enterで閉じる..." _
   exit 0
@@ -20,7 +29,7 @@ trap_handler() {
 trap trap_handler INT
 
 # ── バージョン・アップデート設定 ─────────────────────────
-CURRENT_VERSION="v1.3.5"
+CURRENT_VERSION="v1.4.0"
 _CT_VERSIONS_URL="https://raw.githubusercontent.com/igarinpiano/caffeinate-timer/main/versions.txt"
 _CT_RELEASES_BASE="https://github.com/igarinpiano/caffeinate-timer/releases/download"
 _CT_SCRIPT_FILENAME="caffeinate-timer.command"
@@ -398,6 +407,139 @@ _ct_show_settings() {
   esac
 }
 
+# ── デスクトップ通知（正常終了時のみ呼び出す）───────────
+# テキストはハードコードされており、ユーザー入力を含まない。
+# osascript は macOS 標準搭載。失敗しても処理を継続する。
+_ct_notify() {
+  osascript -e 'display notification "スリープ防止が終了しました。" with title "Caffeinate Timer ☕"' \
+    >/dev/null 2>&1 || true
+}
+
+# ── プログレスバー生成 ────────────────────────────────────
+# $1 = 塗りつぶし数（0–20）。出力は 20 文字の固定幅バー文字列。
+_ct_bar() {
+  local _f=$1 _b="" _i
+  for (( _i=0; _i<_f; _i++ )); do _b="${_b}█"; done
+  for (( _i=_f; _i<20; _i++ )); do _b="${_b}░"; done
+  printf '%s' "$_b"
+}
+
+# ── /wait モード: プロセス監視 ───────────────────────────
+# 引数: プロセス名または PID（前処理なしの raw 文字列）
+# セキュリティ:
+#   PID        — 純粋な整数として検証後、ps -p の引数に渡す。
+#   プロセス名 — 英数字・ドット・ハイフン・アンダースコアのみ許可（最大64文字）。
+#                pgrep -x -- の引数に渡す。いずれもシェル展開なし。
+#                -- によりハイフン始まりの名前（例: -bash）もオプションと誤認されない。
+_ct_run_wait() {
+  local _wt
+  _wt=$(printf '%s' "$1" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+
+  if [ -z "$_wt" ]; then
+    printf '%s\n' "${RED}❌ /wait の後にプロセス名またはPIDを指定してください。${RESET}"
+    printf '%s\n' "例: ${CYAN}/wait Finder${RESET}  または  ${CYAN}/wait 1234${RESET}"
+    printf '\n'
+    read -r -p "Enterで閉じる..." _
+    return 1
+  fi
+
+  local _wait_by_pid=0 _wait_pid=0 _wait_name=""
+
+  if [[ "$_wt" =~ ^[0-9]+$ ]]; then
+    # ── PID モード ──────────────────────────────────────
+    # 10# で8進数誤認を防止。macOS の最大PIDは 99998。
+    _wait_pid=$(( 10#$_wt ))
+    if [ "$_wait_pid" -le 0 ] || [ "$_wait_pid" -gt 99998 ]; then
+      printf '%s\n' "${RED}❌ 無効なPIDです（1〜99998）。${RESET}"
+      printf '\n'
+      read -r -p "Enterで閉じる..." _
+      return 1
+    fi
+    _wait_by_pid=1
+    if ! ps -p "$_wait_pid" -o pid= >/dev/null 2>&1; then
+      printf '%s\n' "${RED}❌ PID ${_wait_pid} のプロセスが見つかりません。${RESET}"
+      printf '\n'
+      read -r -p "Enterで閉じる..." _
+      return 1
+    fi
+  elif [[ "$_wt" =~ ^[a-zA-Z0-9._-]+$ ]] && [ "${#_wt}" -le 64 ]; then
+    # ── プロセス名モード ────────────────────────────────
+    _wait_name="$_wt"
+    if ! pgrep -x -- "$_wait_name" >/dev/null 2>&1; then
+      printf '%s\n' "${RED}❌ プロセス '${_wait_name}' が見つかりません。${RESET}"
+      printf '\n'
+      read -r -p "Enterで閉じる..." _
+      return 1
+    fi
+  else
+    printf '%s\n' "${RED}❌ プロセス名に使用できない文字が含まれています。${RESET}"
+    printf '%s\n' "  英数字・ドット（.）・ハイフン（-）・アンダースコア（_）のみ使用できます（最大64文字）。"
+    printf '%s\n' "  スペースを含む名前の場合は PID で指定してください。"
+    printf '\n'
+    read -r -p "Enterで閉じる..." _
+    return 1
+  fi
+
+  local _w_target
+  if [ "$_wait_by_pid" -eq 1 ]; then
+    _w_target="PID ${_wait_pid}"
+  else
+    _w_target="'${_wait_name}'"
+  fi
+
+  printf '%s\n' "${CYAN}────────────────────────────────────────${RESET}"
+  printf '%s\n' "  ${BOLD}監視対象:${RESET} ${CYAN}${_w_target}${RESET}"
+  printf '%s\n' "${CYAN}────────────────────────────────────────${RESET}"
+  printf '\n'
+  printf '%s\n' "${YELLOW}💡 スリープを防止しています... (Ctrl+C で中断)${RESET}"
+  printf '\n'
+
+  # caffeinate をタイムアウトなしでバックグラウンド起動
+  caffeinate -u -d &
+  _caffeinate_pid=$!
+
+  local _w_start _elapsed _e_h _e_m _e_s _w_tick _alive
+  _w_start=$(date +%s)
+  _w_tick=0
+  _alive=1
+
+  while true; do
+    _elapsed=$(( $(date +%s) - _w_start ))
+    _e_h=$(( _elapsed / 3600 ))
+    _e_m=$(( (_elapsed % 3600) / 60 ))
+    _e_s=$(( _elapsed % 60 ))
+    printf '\r  ⏳ %s の終了を待機中...  経過時間: %02d:%02d:%02d   ' \
+      "$_w_target" "$_e_h" "$_e_m" "$_e_s"
+
+    # 3秒ごとにプロセスの生存確認
+    _w_tick=$(( _w_tick + 1 ))
+    if [ "$_w_tick" -ge 3 ]; then
+      _w_tick=0
+      _alive=0
+      if [ "$_wait_by_pid" -eq 1 ]; then
+        ps -p "$_wait_pid" -o pid= >/dev/null 2>&1 && _alive=1
+      else
+        pgrep -x -- "$_wait_name" >/dev/null 2>&1 && _alive=1
+      fi
+      [ "$_alive" -eq 0 ] && break
+    fi
+
+    sleep 1
+  done
+
+  printf '\r\033[K'
+
+  kill "$_caffeinate_pid" 2>/dev/null
+  wait "$_caffeinate_pid" 2>/dev/null
+  _caffeinate_pid=""
+
+  _ct_notify
+  printf '%s\n' "${GREEN}✅ プロセスが終了しました。スリープ防止を解除します。 ($(date "+%H:%M:%S"))${RESET}"
+  printf '\n'
+  read -r -p "Enterで閉じる..." _
+}
+
+
 # ── ヘッダー ────────────────────────────────────────────
 clear
 printf '%s\n' "${BOLD}${CYAN}☕  Caffeinate タイマー${RESET}"
@@ -423,6 +565,8 @@ printf '%s\n' "  ${CYAN}1.5h${RESET}         → 1時間30分"
 printf '%s\n' "  ${CYAN}1y2mo${RESET}        → 1年2ヶ月"
 printf '%s\n' "  ${CYAN}1y2mo3h30m${RESET}   → 1年2ヶ月3時間30分"
 printf '%s\n' "  ${CYAN}1d3h30m${RESET}      → 1日3時間30分"
+printf '%s\n' "  ${CYAN}/wait <名前>${RESET}  → プロセス終了まで待機"
+printf '%s\n' "  ${CYAN}/bg <時間>${RESET}    → バックグラウンドで実行"
 printf '%s\n' "  ${CYAN}/settings${RESET}    → 設定"
 printf '\n'
 read -r -p "入力: " input
@@ -433,6 +577,29 @@ printf '\n'
 if [ "$input" = "/settings" ]; then
   _ct_show_settings
   exit 0
+fi
+
+# ── /wait コマンド ─────────────────────────────────────────
+# 前処理を通す前に検出する。ターゲットはプロセス名/PIDなので
+# 時間文字列の正規化パイプラインを通さない。
+if [[ "$input" == "/wait "* ]]; then
+  _ct_run_wait "${input#/wait }"
+  exit 0
+fi
+
+# ── /bg プレフィックス ─────────────────────────────────────
+# /bg <時間> の形式を検出し、フラグを立てて時間部分のみ以降の処理に渡す。
+# /bg 単体（時間なし）はエラー。
+_bg_mode=0
+if [[ "$input" == "/bg "* ]]; then
+  _bg_mode=1
+  input="${input#/bg }"
+elif [ "$input" = "/bg" ]; then
+  printf '%s\n' "${RED}❌ /bg の後に時間を指定してください。${RESET}"
+  printf '%s\n' "例: ${CYAN}/bg 90${RESET}  または  ${CYAN}/bg 1h30m${RESET}"
+  printf '\n'
+  read -r -p "Enterで閉じる..." _
+  exit 1
 fi
 
 # ── 前処理①：全角→半角変換（sed s コマンドで1文字ずつ）─
@@ -732,13 +899,81 @@ printf '%s\n' "  ${BOLD}終了時刻:${RESET} ${GREEN}${end_time}${RESET}"
 printf '%s\n' "  ${BOLD}継続時間:${RESET} ${CYAN}${duration_str}${RESET}  (${seconds}秒)"
 printf '%s\n' "${CYAN}────────────────────────────────────────${RESET}"
 printf '\n'
+
+# ── /bg モード: バックグラウンドで実行 ──────────────────
+# caffeinate を nohup + disown でバックグラウンドに逃がし、
+# 終了時に osascript で通知を送る。
+# $seconds は検証済み正整数。シングルクォートで囲み展開を防ぐ。
+# コマンド文字列内に変数展開を使用するが、$seconds は整数のみなので安全。
+if [ "$_bg_mode" -eq 1 ]; then
+  printf '%s\n' "${YELLOW}🔄 バックグラウンドで実行します。終了時に通知が届きます。${RESET}"
+  printf '\n'
+  # nohup でシグナルを切り離し、caffeinate 終了後に osascript で通知。
+  # 標準出力・標準エラーは /dev/null に捨て、ターミナルへの出力を遮断する。
+  nohup bash -c "caffeinate -u -d -t ${seconds}; \
+    osascript -e 'display notification \"スリープ防止が終了しました。\" with title \"Caffeinate Timer ☕\"' \
+    >/dev/null 2>&1" >/dev/null 2>&1 &
+  disown
+  printf '%s\n' "${GREEN}✅ バックグラウンドで起動しました。このウィンドウは閉じても構いません。${RESET}"
+  printf '\n'
+  read -r -p "Enterで閉じる..." _
+  exit 0
+fi
+
+# ── Caffeinate をバックグラウンドで起動し、カウントダウン表示 ──
+# caffeinate を & でバックグラウンド起動し PID を記録する。
+# シェル側のカウントダウンループが Ctrl+C を受け取り caffeinate を停止する。
 printf '%s\n' "${YELLOW}💡 スリープを防止しています... (Ctrl+C で中断)${RESET}"
 printf '\n'
 
-# ── Caffeinate 実行 ─────────────────────────────────────
-caffeinate -u -d -t "$seconds"
+caffeinate -u -d -t "$seconds" &
+_caffeinate_pid=$!
+
+_ct_start=$(date +%s)
+
+while true; do
+  _ct_now=$(date +%s)
+  _ct_elapsed=$(( _ct_now - _ct_start ))
+  _ct_remain=$(( seconds - _ct_elapsed ))
+  [ "$_ct_remain" -lt 0 ] && _ct_remain=0
+
+  # 残り時間を HH:MM:SS 形式に変換
+  _r_h=$(( _ct_remain / 3600 ))
+  _r_m=$(( (_ct_remain % 3600) / 60 ))
+  _r_s=$(( _ct_remain % 60 ))
+
+  # プログレスバー（20マス）
+  if [ "$seconds" -gt 0 ]; then
+    _filled=$(( (seconds - _ct_remain) * 20 / seconds ))
+  else
+    _filled=20
+  fi
+  [ "$_filled" -gt 20 ] && _filled=20
+  _pct=$(( (seconds - _ct_remain) * 100 / seconds ))
+  [ "$_pct" -gt 100 ] && _pct=100
+
+  printf '\r  %s [%s] %3d%%  残り: %02d:%02d:%02d   ' \
+    "${GREEN}▶${RESET}" \
+    "$(_ct_bar "$_filled")" \
+    "$_pct" \
+    "$_r_h" "$_r_m" "$_r_s"
+
+  # caffeinate が終了済みか確認（正常終了）
+  if ! kill -0 "$_caffeinate_pid" 2>/dev/null; then
+    break
+  fi
+
+  [ "$_ct_remain" -eq 0 ] && sleep 0.3 && break
+
+  sleep 1
+done
+
+printf '\r\033[K'
+wait "$_caffeinate_pid" 2>/dev/null
+_caffeinate_pid=""
 
 # ── 正常終了 ─────────────────────────────────────────────
+_ct_notify
 printf '%s\n' "${GREEN}✅ 終了しました。 ($(date "+%H:%M:%S"))${RESET}"
 printf '\n'
 read -r -p "Enterで閉じる..." _
