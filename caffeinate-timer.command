@@ -29,7 +29,7 @@ trap_handler() {
 trap trap_handler INT
 
 # ── バージョン・アップデート設定 ─────────────────────────
-CURRENT_VERSION="v1.4.0"
+CURRENT_VERSION="v1.4.1"
 _CT_VERSIONS_URL="https://raw.githubusercontent.com/igarinpiano/caffeinate-timer/main/versions.txt"
 _CT_RELEASES_BASE="https://github.com/igarinpiano/caffeinate-timer/releases/download"
 _CT_SCRIPT_FILENAME="caffeinate-timer.command"
@@ -424,6 +424,43 @@ _ct_bar() {
   printf '%s' "$_b"
 }
 
+# ── 時間調整: 差分秒数のパース ─────────────────────────────
+# $1 = 調整文字列（例: +30m, -1h, +1h30m, +90）
+# 標準出力に符号付き秒数を出力。パース失敗・0秒の場合は空文字を出力。
+# セキュリティ: 既存パターンと同一のバリデーションを通す。シェル評価なし。
+_ct_parse_adj_secs() {
+  local _a="$1" _sign=1
+  # 符号の抽出
+  if [[ "$_a" == +* ]]; then
+    _a="${_a#+}"
+  elif [[ "$_a" == -* ]]; then
+    _sign=-1
+    _a="${_a#-}"
+  fi
+  # 前処理（スペース除去・小文字化・単位正規化・先頭ゼロ除去）
+  _a="${_a// /}"
+  _a=$(printf '%s' "$_a" | tr '[:upper:]' '[:lower:]')
+  _a=$(printf '%s' "$_a" | sed -E \
+    -e 's/hours?/h/g' -e 's/hrs?/h/g' \
+    -e 's/minutes?/m/g' -e 's/mins?/m/g' \
+    -e 's/seconds?/s/g' -e 's/secs?/s/g')
+  _a=$(printf '%s' "$_a" | sed -E 's/(^|[^0-9])0+([0-9])/\1\2/g')
+  [ "${#_a}" -gt 16 ] && return
+  local _sec=0
+  if   [[ "$_a" =~ ^([0-9]+)h([0-9]+)m([0-9]+)s$ ]]; then _sec=$(( 10#${BASH_REMATCH[1]}*3600 + 10#${BASH_REMATCH[2]}*60 + 10#${BASH_REMATCH[3]} ))
+  elif [[ "$_a" =~ ^([0-9]+)h([0-9]+)m$ ]];           then _sec=$(( 10#${BASH_REMATCH[1]}*3600 + 10#${BASH_REMATCH[2]}*60 ))
+  elif [[ "$_a" =~ ^([0-9]+)h([0-9]+)s$ ]];           then _sec=$(( 10#${BASH_REMATCH[1]}*3600 + 10#${BASH_REMATCH[2]} ))
+  elif [[ "$_a" =~ ^([0-9]+)m([0-9]+)s$ ]];           then _sec=$(( 10#${BASH_REMATCH[1]}*60  + 10#${BASH_REMATCH[2]} ))
+  elif [[ "$_a" =~ ^([0-9]+)h$ ]];                    then _sec=$(( 10#${BASH_REMATCH[1]}*3600 ))
+  elif [[ "$_a" =~ ^([0-9]+)m$ ]];                    then _sec=$(( 10#${BASH_REMATCH[1]}*60  ))
+  elif [[ "$_a" =~ ^([0-9]+)s$ ]];                    then _sec=$(( 10#${BASH_REMATCH[1]} ))
+  elif [[ "$_a" =~ ^([0-9]+)$ ]];                     then _sec=$(( 10#${BASH_REMATCH[1]}*60 ))
+  else return
+  fi
+  [ "$_sec" -eq 0 ] && return
+  printf '%d' $(( _sign * _sec ))
+}
+
 # ── /wait モード: プロセス監視 ───────────────────────────
 # 引数: プロセス名または PID（前処理なしの raw 文字列）
 # セキュリティ:
@@ -601,6 +638,52 @@ elif [ "$input" = "/bg" ]; then
   read -r -p "Enterで閉じる..." _
   exit 1
 fi
+
+# ── /until コマンド ────────────────────────────────────────────
+# /bg /until HH:MM の形式も自然にサポート（/bg 除去後に検出）。
+# ユーザー入力はここで完結し、以降の前処理パイプラインは通さない。
+# セキュリティ: HH:MM のみ許可（^([0-9]{1,2}):([0-9]{2})$）。
+#              数値は 10# で8進数誤認を防止した上で範囲チェックを行う。
+_until_parsed=0
+if [[ "$input" == "/until "* ]]; then
+  _until_arg="${input#/until }"
+  _until_arg="${_until_arg// /}"
+  if ! [[ "$_until_arg" =~ ^([0-9]{1,2}):([0-9]{2})$ ]]; then
+    printf '%s\n' "${RED}❌ /until の形式が不正です。HH:MM 形式で指定してください。${RESET}"
+    printf '%s\n' "例: ${CYAN}/until 18:30${RESET}  または  ${CYAN}/until 9:00${RESET}"
+    printf '\n'
+    read -r -p "Enterで閉じる..." _
+    exit 1
+  fi
+  _u_h=$(( 10#${BASH_REMATCH[1]} ))
+  _u_m=$(( 10#${BASH_REMATCH[2]} ))
+  if [ "$_u_h" -gt 23 ] || [ "$_u_m" -gt 59 ]; then
+    printf '%s\n' "${RED}❌ 無効な時刻です（時: 0〜23、分: 0〜59）。${RESET}"
+    printf '\n'
+    read -r -p "Enterで閉じる..." _
+    exit 1
+  fi
+  _now_epoch=$(date +%s)
+  # BSD date -v で今日の指定時刻のエポック秒を算出する。
+  # -v 0S で秒を0にリセットし、時・分を上書きする。
+  _target_epoch=$(date -r "$_now_epoch" -v "${_u_h}H" -v "${_u_m}M" -v 0S +%s) || {
+    printf '%s\n' "${RED}❌ 時刻の計算に失敗しました。${RESET}"
+    printf '\n'
+    read -r -p "Enterで閉じる..." _
+    exit 1
+  }
+  # 指定時刻が現時刻以前（同秒含む）なら翌日として扱う
+  if [ "$_target_epoch" -le "$_now_epoch" ]; then
+    _target_epoch=$(( _target_epoch + 86400 ))
+  fi
+  seconds=$(( _target_epoch - _now_epoch ))
+  sub_seconds=$seconds
+  year_val=0
+  month_val=0
+  _until_parsed=1
+fi
+
+if [ "$_until_parsed" -eq 0 ]; then
 
 # ── 前処理①：全角→半角変換（sed s コマンドで1文字ずつ）─
 # ※ sed の y コマンドはバイト長一致が必要なため、
@@ -821,6 +904,8 @@ else
   exit 1
 fi
 
+fi  # _until_parsed
+
 # ── 年・月のカレンダー演算（秒への変換）────────────────────────────
 # BSD date の -v オプションでカレンダーを考慮した月・年の加算を行う。
 # sub_seconds は d/h/m/s 分のみの秒数（表示用に保持）。
@@ -922,11 +1007,13 @@ fi
 
 # ── Caffeinate をバックグラウンドで起動し、カウントダウン表示 ──
 # caffeinate を & でバックグラウンド起動し PID を記録する。
-# シェル側のカウントダウンループが Ctrl+C を受け取り caffeinate を停止する。
+# -t オプションは使用しない（時間調整による延長に対応するため）。
+# シェル側のカウントダウンループが残り時間を管理し、終了時に kill する。
 printf '%s\n' "${YELLOW}💡 スリープを防止しています... (Ctrl+C で中断)${RESET}"
+printf '%s\n' "  ${CYAN}ℹ️  調整: +30m や -1h を入力して Enter（例: +30m  -1h  +1h30m）${RESET}"
 printf '\n'
 
-caffeinate -u -d -t "$seconds" &
+caffeinate -u -d &
 _caffeinate_pid=$!
 
 _ct_start=$(date +%s)
@@ -958,14 +1045,26 @@ while true; do
     "$_pct" \
     "$_r_h" "$_r_m" "$_r_s"
 
-  # caffeinate が終了済みか確認（正常終了）
-  if ! kill -0 "$_caffeinate_pid" 2>/dev/null; then
-    break
+  if [ "$_ct_remain" -eq 0 ]; then break; fi
+
+  # read -t 1: 1秒タイムアウトで1行読み取り。
+  # タイムアウト（戻り値非0）→ ループ継続。
+  # Enter 押下（戻り値0）→ 調整文字列として処理。
+  # read はターミナルへのエコーを維持するため、ユーザーが入力した文字は
+  # カウントダウン行の後ろに自然に表示される（raw モード不要）。
+  if IFS= read -r -t 1 _adj_raw 2>/dev/null; then
+    _adj_delta=$(_ct_parse_adj_secs "$_adj_raw")
+    if [ -n "$_adj_delta" ]; then
+      _ct_now_adj=$(date +%s)
+      _ct_elapsed_adj=$(( _ct_now_adj - _ct_start ))
+      _new_seconds=$(( seconds + _adj_delta ))
+      # 残り時間が0以下にならないよう保護（最低1秒を確保）
+      if [ "$(( _new_seconds - _ct_elapsed_adj ))" -le 0 ]; then
+        _new_seconds=$(( _ct_elapsed_adj + 1 ))
+      fi
+      seconds=$_new_seconds
+    fi
   fi
-
-  [ "$_ct_remain" -eq 0 ] && sleep 0.3 && break
-
-  sleep 1
 done
 
 printf '\r\033[K'

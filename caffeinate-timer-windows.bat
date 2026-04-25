@@ -52,7 +52,7 @@ $RED    = "$E[0;31m"
 $RESET  = "$E[0m"
 
 # ── バージョン定数 ───────────────────────────────────────
-$CURRENT_VERSION = "v1.4.0"
+$CURRENT_VERSION = "v1.4.1"
 
 # ── デスクトップ通知（正常終了時のみ呼び出す）────────────
 # System.Windows.Forms.NotifyIcon によるバルーン通知。
@@ -71,6 +71,39 @@ function Send-CaffeinateNotification {
         Start-Sleep -Milliseconds 200
         $n.Dispose()
     } catch {}
+}
+
+# ── 時間調整: 差分秒数のパース ─────────────────────────────
+# $AdjStr = 調整文字列（例: +30m, -1h, +1h30m, +90）
+# 成功時は符号付き [long] 秒数を返す。失敗・0秒は $null を返す。
+# セキュリティ: 既存パターンと同一のバリデーションを通す。コマンド実行なし。
+function Invoke-CaffeinateAdjust {
+    param([string]$AdjStr)
+    $a    = $AdjStr.Trim()
+    $sign = 1L
+    if     ($a.StartsWith('+')) { $a = $a.Substring(1) }
+    elseif ($a.StartsWith('-')) { $sign = -1L; $a = $a.Substring(1) }
+    $a = $a.Replace(' ', '').ToLower()
+    $a = $a -replace 'hours?',   'h' `
+            -replace 'hrs?',     'h' `
+            -replace 'minutes?', 'm' `
+            -replace 'mins?',    'm' `
+            -replace 'seconds?', 's' `
+            -replace 'secs?',    's'
+    $a = $a -replace '(?<![0-9])0+(?=[0-9])', ''
+    if ($a.Length -gt 16) { return $null }
+    $sec = 0L
+    if      ($a -match '^(\d+)h(\d+)m(\d+)s$') { $sec = [long]$Matches[1]*3600L + [long]$Matches[2]*60L + [long]$Matches[3] }
+    elseif  ($a -match '^(\d+)h(\d+)m$')        { $sec = [long]$Matches[1]*3600L + [long]$Matches[2]*60L }
+    elseif  ($a -match '^(\d+)h(\d+)s$')        { $sec = [long]$Matches[1]*3600L + [long]$Matches[2] }
+    elseif  ($a -match '^(\d+)m(\d+)s$')        { $sec = [long]$Matches[1]*60L   + [long]$Matches[2] }
+    elseif  ($a -match '^(\d+)h$')              { $sec = [long]$Matches[1]*3600L }
+    elseif  ($a -match '^(\d+)m$')              { $sec = [long]$Matches[1]*60L   }
+    elseif  ($a -match '^(\d+)s$')              { $sec = [long]$Matches[1]       }
+    elseif  ($a -match '^(\d+)$')               { $sec = [long]$Matches[1]*60L   }
+    else { return $null }
+    if ($sec -eq 0L) { return $null }
+    return ($sign * $sec)
 }
 
 # ── /wait モード: プロセス監視 ───────────────────────────
@@ -261,7 +294,8 @@ Write-Host "  ${CYAN}1y2mo${RESET}        → 1年2ヶ月"
 Write-Host "  ${CYAN}1y2mo3h30m${RESET}   → 1年2ヶ月3時間30分"
 Write-Host "  ${CYAN}1d3h30m${RESET}      → 1日3時間30分"
 Write-Host "  ${CYAN}/wait <名前>${RESET}  → プロセス終了まで待機"
-Write-Host "  ${CYAN}/bg <時間>${RESET}    → バックグラウンドで実行"
+Write-Host "  ${CYAN}/until <時刻>${RESET}  → 指定時刻まで防止（例: /until 18:30）"
+Write-Host "  ${CYAN}/bg <時間>${RESET}    → バックグラウンドで実行（例: /bg 90）"
 Write-Host "  ${CYAN}/settings${RESET}    → 設定"
 Write-Host ""
 $raw = Read-Host "入力"
@@ -298,6 +332,34 @@ if ($trimmedRaw -like '/bg *') {
     Read-Host "Enterで閉じる..."
     exit 1
 }
+
+# ── /until コマンド ────────────────────────────────────────────
+# /bg /until HH:MM の形式も自然にサポート（/bg 除去後に検出）。
+# セキュリティ: HH:MM のみ許可（^\d{1,2}:\d{2}$）。
+#              [int] キャストで範囲チェック。コマンド実行なし。
+$untilParsed = $false
+if ($raw.Trim() -match '^/until\s+(\d{1,2}):(\d{2})\s*$') {
+    $uH = [int]$Matches[1]
+    $uM = [int]$Matches[2]
+    if ($uH -gt 23 -or $uM -gt 59) {
+        Write-Host "${RED}❌ 無効な時刻です（時: 0〜23、分: 0〜59）。${RESET}"
+        Write-Host ""
+        Read-Host "Enterで閉じる..."
+        exit 1
+    }
+    $_nowU = Get-Date
+    # 今日の指定時刻を DateTime として構築する
+    $_targetDt = [DateTime]::new($_nowU.Year, $_nowU.Month, $_nowU.Day, $uH, $uM, 0)
+    # 指定時刻が現時刻以前（同秒含む）なら翌日として扱う
+    if ($_targetDt -le $_nowU) { $_targetDt = $_targetDt.AddDays(1) }
+    $seconds      = [long]($_targetDt - $_nowU).TotalSeconds
+    $subSeconds   = $seconds
+    $yearVal      = 0L
+    $monthVal     = 0L
+    $untilParsed  = $true
+}
+
+if (-not $untilParsed) {
 
 # ── 前処理①：全角→半角変換 ─────────────────────────────
 # （sed の y コマンド相当をPowerShell の Replace で実現）
@@ -510,6 +572,8 @@ if (-not $parsed) {
     exit 1
 }
 
+}  # -not $untilParsed
+
 # ── 年・月のカレンダー演算（秒への変換）──────────────────────────────
 # AddYears()/AddMonths() はカレンダーを考慮した正確な月・年の加算を行う。
 # sub_seconds は d/h/m/s 分のみの秒数（表示用に保持）。
@@ -614,6 +678,7 @@ if ($bgMode) {
 }
 
 Write-Host "${YELLOW}💡 スリープを防止しています... (Ctrl+C で中断)${RESET}"
+Write-Host "  ${CYAN}ℹ️  調整: +30m や -1h を入力して Enter（例: +30m  -1h  +1h30m）${RESET}"
 Write-Host ""
 
 # ── スリープ防止 開始 ────────────────────────────────────
@@ -625,9 +690,11 @@ try { [WinPwr]::Prevent() } catch {}
 # 200ms ポーリングで検出 → 確実にスリープ防止を解除できる
 try { [Console]::TreatControlCAsInput = $true } catch {}
 
-$targetTime  = (Get-Date).AddSeconds($seconds)
+$adjStart    = Get-Date
+$targetTime  = $adjStart.AddSeconds($seconds)
 $interrupted = $false
 $lastSec     = -1
+$adjBuffer   = ''
 
 # ── try/finally でクリーンアップを保証 ──────────────────
 # 異常終了・Terminating Error 発生時でも TreatControlCAsInput の
@@ -643,11 +710,11 @@ try {
             $rH      = [int][Math]::Floor($remain / 3600)
             $rM      = [int][Math]::Floor(($remain % 3600) / 60)
             $rS      = [int]($remain % 60)
-            $elapsed = $seconds - $remain
-            if ($elapsed -lt 0) { $elapsed = 0 }
-            $filled  = if ($seconds -gt 0) { [int][Math]::Floor($elapsed * 20 / $seconds) } else { 20 }
+            $elapsed_bar = [long][Math]::Floor(((Get-Date) - $adjStart).TotalSeconds)
+            if ($elapsed_bar -lt 0) { $elapsed_bar = 0 }
+            $filled  = if ($seconds -gt 0) { [int][Math]::Floor($elapsed_bar * 20 / $seconds) } else { 20 }
             if ($filled -gt 20) { $filled = 20 }
-            $pct = if ($seconds -gt 0) { [int][Math]::Floor($elapsed * 100 / $seconds) } else { 100 }
+            $pct = if ($seconds -gt 0) { [int][Math]::Floor($elapsed_bar * 100 / $seconds) } else { 100 }
             if ($pct -gt 100) { $pct = 100 }
             $bar = ('█' * $filled) + ('░' * (20 - $filled))
             Write-Host -NoNewline ("`r  ${GREEN}▶${RESET} [$bar] $pct%  残り: {0:D2}:{1:D2}:{2:D2}   " -f $rH, $rM, $rS)
@@ -656,15 +723,32 @@ try {
         Start-Sleep -Milliseconds 200
         try {
             # バッファに溜まったキー入力をすべて消化（ドレイン）する。
-            # if のままでは 1 イテレーションにつき 1 キーしか読まず、
-            # 複数キーが積まれていると Ctrl+C 検知まで最大
-            # (先行キー数 × 200ms) の遅延が生じるため while に変更。
+            # キー入力は $adjBuffer に蓄積し、Enter 押下で調整コマンドとして処理する。
             while ([Console]::KeyAvailable) {
                 $key = [Console]::ReadKey($true)
                 if ($key.Key -eq 'C' -and
                     ($key.Modifiers -band [ConsoleModifiers]::Control)) {
                     $interrupted = $true
                     break  # 内側の while (KeyAvailable) を抜ける
+                } elseif ($key.Key -eq [ConsoleKey]::Enter) {
+                    # Enter 押下: バッファ内容を調整コマンドとしてパース
+                    $adjDelta = Invoke-CaffeinateAdjust -AdjStr $adjBuffer
+                    $adjBuffer = ''
+                    if ($null -ne $adjDelta) {
+                        $elapsed_now   = [long][Math]::Floor(((Get-Date) - $adjStart).TotalSeconds)
+                        $newSeconds    = $seconds + $adjDelta
+                        # 残り時間が0以下にならないよう保護（最低1秒を確保）
+                        if (($newSeconds - $elapsed_now) -le 0L) { $newSeconds = $elapsed_now + 1L }
+                        $seconds    = $newSeconds
+                        $targetTime = $adjStart.AddSeconds($seconds)
+                    }
+                } elseif ($key.Key -eq [ConsoleKey]::Backspace) {
+                    if ($adjBuffer.Length -gt 0) { $adjBuffer = $adjBuffer.Substring(0, $adjBuffer.Length - 1) }
+                } else {
+                    # 通常文字をバッファに追記（最大20文字で打ち切り）
+                    if ($adjBuffer.Length -lt 20 -and $key.KeyChar -ne [char]0) {
+                        $adjBuffer += $key.KeyChar
+                    }
                 }
             }
         } catch {}
