@@ -13,23 +13,45 @@ RESET=$'\033[0m'
 # _caffeinate_pid はバックグラウンドで起動した caffeinate の PID。
 # trap 発火時にカウントダウン行を消去し、caffeinate を終了させる。
 _caffeinate_pid=""
+# ランタイム中フラグ: 1 のとき trap は即座に exit せず、フラグを立てて return する。
+# これにより caffeinate の kill と表示クリアをループ側で確実に処理できる。
+_ct_runtime_interrupt_mode=0
+_ct_interrupt_requested=0
 trap_handler() {
+  if [ "$_ct_runtime_interrupt_mode" -eq 1 ]; then
+    _ct_interrupt_requested=1
+    return
+  fi
   printf '\r\033[K'
   printf '\n'
   printf '%s\n' "${YELLOW}⚠️  中断されました。スリープ防止を解除します。${RESET}"
-  if [ -n "$_caffeinate_pid" ]; then
-    kill "$_caffeinate_pid" 2>/dev/null
-    wait "$_caffeinate_pid" 2>/dev/null
-    _caffeinate_pid=""
-  fi
+  _ct_cleanup_caffeinate
   printf '\n'
   read -r -p "Enterで閉じる..." _
   exit 0
 }
 trap trap_handler INT
 
+_ct_begin_interruptible_run() {
+  _ct_interrupt_requested=0
+  _ct_runtime_interrupt_mode=1
+}
+
+_ct_end_interruptible_run() {
+  _ct_runtime_interrupt_mode=0
+  _ct_interrupt_requested=0
+}
+
+_ct_cleanup_caffeinate() {
+  if [ -n "$_caffeinate_pid" ]; then
+    kill "$_caffeinate_pid" 2>/dev/null
+    wait "$_caffeinate_pid" 2>/dev/null
+    _caffeinate_pid=""
+  fi
+}
+
 # ── バージョン・アップデート設定 ─────────────────────────
-CURRENT_VERSION="v1.4.1"
+CURRENT_VERSION="v1.4.2"
 _CT_VERSIONS_URL="https://raw.githubusercontent.com/igarinpiano/caffeinate-timer/main/versions.txt"
 _CT_RELEASES_BASE="https://github.com/igarinpiano/caffeinate-timer/releases/download"
 _CT_SCRIPT_FILENAME="caffeinate-timer.command"
@@ -46,7 +68,7 @@ fi
 # v + 数字.数字.数字 のみ許可。コマンドインジェクション防止のため
 # URL 組み立てに使用する前に必ず通す。
 _ct_validate_version() {
-  [[ "$1" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+  [[ "$1" =~ ^v[0-9]+\.[0-9]+\.[0-9]+[a-z]?$ ]]
 }
 
 # ── アップデート: versions.txt 取得 ──────────────────────
@@ -425,40 +447,98 @@ _ct_bar() {
 }
 
 # ── 時間調整: 差分秒数のパース ─────────────────────────────
-# $1 = 調整文字列（例: +30m, -1h, +1h30m, +90）
+# $1 = 調整文字列（例: +30m, -1h, +1y2mo, +1d3h30m）
 # 標準出力に符号付き秒数を出力。パース失敗・0秒の場合は空文字を出力。
 # セキュリティ: 既存パターンと同一のバリデーションを通す。シェル評価なし。
+# y/mo: BSD date -v によるカレンダー演算（macOS）。
 _ct_parse_adj_secs() {
   local _a="$1" _sign=1
-  # 符号の抽出
   if [[ "$_a" == +* ]]; then
     _a="${_a#+}"
   elif [[ "$_a" == -* ]]; then
     _sign=-1
     _a="${_a#-}"
   fi
-  # 前処理（スペース除去・小文字化・単位正規化・先頭ゼロ除去）
   _a="${_a// /}"
   _a=$(printf '%s' "$_a" | tr '[:upper:]' '[:lower:]')
   _a=$(printf '%s' "$_a" | sed -E \
-    -e 's/hours?/h/g' -e 's/hrs?/h/g' \
+    -e 's/months?/mo/g' -e 's/years?/y/g' -e 's/yrs?/y/g' \
+    -e 's/hours?/h/g'   -e 's/hrs?/h/g' \
     -e 's/minutes?/m/g' -e 's/mins?/m/g' \
-    -e 's/seconds?/s/g' -e 's/secs?/s/g')
+    -e 's/seconds?/s/g' -e 's/secs?/s/g' \
+    -e 's/days?/d/g')
   _a=$(printf '%s' "$_a" | sed -E 's/(^|[^0-9])0+([0-9])/\1\2/g')
-  [ "${#_a}" -gt 16 ] && return
-  local _sec=0
-  if   [[ "$_a" =~ ^([0-9]+)h([0-9]+)m([0-9]+)s$ ]]; then _sec=$(( 10#${BASH_REMATCH[1]}*3600 + 10#${BASH_REMATCH[2]}*60 + 10#${BASH_REMATCH[3]} ))
-  elif [[ "$_a" =~ ^([0-9]+)h([0-9]+)m$ ]];           then _sec=$(( 10#${BASH_REMATCH[1]}*3600 + 10#${BASH_REMATCH[2]}*60 ))
-  elif [[ "$_a" =~ ^([0-9]+)h([0-9]+)s$ ]];           then _sec=$(( 10#${BASH_REMATCH[1]}*3600 + 10#${BASH_REMATCH[2]} ))
-  elif [[ "$_a" =~ ^([0-9]+)m([0-9]+)s$ ]];           then _sec=$(( 10#${BASH_REMATCH[1]}*60  + 10#${BASH_REMATCH[2]} ))
-  elif [[ "$_a" =~ ^([0-9]+)h$ ]];                    then _sec=$(( 10#${BASH_REMATCH[1]}*3600 ))
-  elif [[ "$_a" =~ ^([0-9]+)m$ ]];                    then _sec=$(( 10#${BASH_REMATCH[1]}*60  ))
-  elif [[ "$_a" =~ ^([0-9]+)s$ ]];                    then _sec=$(( 10#${BASH_REMATCH[1]} ))
-  elif [[ "$_a" =~ ^([0-9]+)$ ]];                     then _sec=$(( 10#${BASH_REMATCH[1]}*60 ))
+  [ "${#_a}" -gt 20 ] && return
+  local _year_adj=0 _month_adj=0 _sec=0
+  if [[ "$_a" =~ ^([0-9]+)y(.*)$ ]]; then
+    [ "${#BASH_REMATCH[1]}" -gt 4 ] && return
+    _year_adj=$(( 10#${BASH_REMATCH[1]} )); _a="${BASH_REMATCH[2]}"
+  fi
+  if [[ "$_a" =~ ^([0-9]+)mo(.*)$ ]]; then
+    [ "${#BASH_REMATCH[1]}" -gt 4 ] && return
+    _month_adj=$(( 10#${BASH_REMATCH[1]} )); _a="${BASH_REMATCH[2]}"
+  fi
+  if   [[ -z "$_a" ]];                                         then _sec=0
+  elif [[ "$_a" =~ ^([0-9]+)d([0-9]+)h([0-9]+)m([0-9]+)s$ ]]; then _sec=$(( 10#${BASH_REMATCH[1]}*86400 + 10#${BASH_REMATCH[2]}*3600 + 10#${BASH_REMATCH[3]}*60 + 10#${BASH_REMATCH[4]} ))
+  elif [[ "$_a" =~ ^([0-9]+)d([0-9]+)h([0-9]+)m$ ]];          then _sec=$(( 10#${BASH_REMATCH[1]}*86400 + 10#${BASH_REMATCH[2]}*3600 + 10#${BASH_REMATCH[3]}*60 ))
+  elif [[ "$_a" =~ ^([0-9]+)d([0-9]+)h([0-9]+)s$ ]];          then _sec=$(( 10#${BASH_REMATCH[1]}*86400 + 10#${BASH_REMATCH[2]}*3600 + 10#${BASH_REMATCH[3]} ))
+  elif [[ "$_a" =~ ^([0-9]+)d([0-9]+)m([0-9]+)s$ ]];          then _sec=$(( 10#${BASH_REMATCH[1]}*86400 + 10#${BASH_REMATCH[2]}*60 + 10#${BASH_REMATCH[3]} ))
+  elif [[ "$_a" =~ ^([0-9]+)d([0-9]+)h$ ]];                   then _sec=$(( 10#${BASH_REMATCH[1]}*86400 + 10#${BASH_REMATCH[2]}*3600 ))
+  elif [[ "$_a" =~ ^([0-9]+)d([0-9]+)m$ ]];                   then _sec=$(( 10#${BASH_REMATCH[1]}*86400 + 10#${BASH_REMATCH[2]}*60 ))
+  elif [[ "$_a" =~ ^([0-9]+)d([0-9]+)s$ ]];                   then _sec=$(( 10#${BASH_REMATCH[1]}*86400 + 10#${BASH_REMATCH[2]} ))
+  elif [[ "$_a" =~ ^([0-9]+)d$ ]];                             then _sec=$(( 10#${BASH_REMATCH[1]}*86400 ))
+  elif [[ "$_a" =~ ^([0-9]+)h([0-9]+)m([0-9]+)s$ ]];          then _sec=$(( 10#${BASH_REMATCH[1]}*3600 + 10#${BASH_REMATCH[2]}*60 + 10#${BASH_REMATCH[3]} ))
+  elif [[ "$_a" =~ ^([0-9]+)h([0-9]+)m$ ]];                   then _sec=$(( 10#${BASH_REMATCH[1]}*3600 + 10#${BASH_REMATCH[2]}*60 ))
+  elif [[ "$_a" =~ ^([0-9]+)h([0-9]+)s$ ]];                   then _sec=$(( 10#${BASH_REMATCH[1]}*3600 + 10#${BASH_REMATCH[2]} ))
+  elif [[ "$_a" =~ ^([0-9]+)m([0-9]+)s$ ]];                   then _sec=$(( 10#${BASH_REMATCH[1]}*60 + 10#${BASH_REMATCH[2]} ))
+  elif [[ "$_a" =~ ^([0-9]+)h$ ]];                             then _sec=$(( 10#${BASH_REMATCH[1]}*3600 ))
+  elif [[ "$_a" =~ ^([0-9]+)m$ ]];                             then _sec=$(( 10#${BASH_REMATCH[1]}*60 ))
+  elif [[ "$_a" =~ ^([0-9]+)s$ ]];                             then _sec=$(( 10#${BASH_REMATCH[1]} ))
+  elif [[ "$_a" =~ ^([0-9]+)$ ]];                              then _sec=$(( 10#${BASH_REMATCH[1]}*60 ))
   else return
   fi
-  [ "$_sec" -eq 0 ] && return
-  printf '%d' $(( _sign * _sec ))
+  local _total_sec=$_sec
+  if [ "$_year_adj" -gt 0 ] || [ "$_month_adj" -gt 0 ]; then
+    local _now_cal _fut_cal
+    _now_cal=$(date +%s)
+    if [ "$_year_adj" -gt 0 ] && [ "$_month_adj" -gt 0 ]; then
+      _fut_cal=$(date -r "$_now_cal" -v "+${_year_adj}y" -v "+${_month_adj}m" +%s) || return
+    elif [ "$_year_adj" -gt 0 ]; then
+      _fut_cal=$(date -r "$_now_cal" -v "+${_year_adj}y" +%s) || return
+    else
+      _fut_cal=$(date -r "$_now_cal" -v "+${_month_adj}m" +%s) || return
+    fi
+    _total_sec=$(( _fut_cal - _now_cal + _sec ))
+  fi
+  [ "$_total_sec" -eq 0 ] && return
+  printf '%d' $(( _sign * _total_sec ))
+}
+
+# ── 2行タイマー UI ─────────────────────────────────────────
+# 上の行: プログレス表示 / 下の行: 調整入力欄
+# \033[1A でカーソルを1行上へ移動し、\033[2K で行をクリアして再描画する。
+_ct_timer_ui_active=0
+
+_ct_timer_ui_begin() {
+  _ct_timer_ui_active=1
+  printf ' \n '  # 2行分のスペースを確保（上: 状態行、下: 調整行）
+}
+
+_ct_timer_ui_render() {
+  local _status="$1"
+  local _buffer="$2"
+  [ "$_ct_timer_ui_active" -eq 1 ] || _ct_timer_ui_begin
+  printf '\r\033[1A'
+  printf '\033[2K%s\n' "$_status"
+  printf '\033[2K  %s調整%s %s' "$CYAN" "$RESET" "$_buffer"
+}
+
+_ct_timer_ui_clear() {
+  [ "$_ct_timer_ui_active" -eq 1 ] || return
+  printf '\r\033[1A'
+  printf '\033[2K\n'
+  printf '\033[2K\r'
+  _ct_timer_ui_active=0
 }
 
 # ── /wait モード: プロセス監視 ───────────────────────────
@@ -535,17 +615,21 @@ _ct_run_wait() {
   caffeinate -u -d &
   _caffeinate_pid=$!
 
-  local _w_start _elapsed _e_h _e_m _e_s _w_tick _alive
+  local _w_start _elapsed _e_h _e_m _e_s _w_tick _alive _w_interrupted
   _w_start=$(date +%s)
   _w_tick=0
   _alive=1
+  _w_interrupted=0
+  _ct_begin_interruptible_run
 
   while true; do
+    if [ "$_ct_interrupt_requested" -eq 1 ]; then break; fi
+
     _elapsed=$(( $(date +%s) - _w_start ))
     _e_h=$(( _elapsed / 3600 ))
     _e_m=$(( (_elapsed % 3600) / 60 ))
     _e_s=$(( _elapsed % 60 ))
-    printf '\r  ⏳ %s の終了を待機中...  経過時間: %02d:%02d:%02d   ' \
+    printf '\r\033[K  ⏳ %s の終了を待機中...  経過時間: %02d:%02d:%02d   ' \
       "$_w_target" "$_e_h" "$_e_m" "$_e_s"
 
     # 3秒ごとにプロセスの生存確認
@@ -564,11 +648,17 @@ _ct_run_wait() {
     sleep 1
   done
 
+  _w_interrupted=$_ct_interrupt_requested
   printf '\r\033[K'
+  _ct_cleanup_caffeinate
+  _ct_end_interruptible_run
 
-  kill "$_caffeinate_pid" 2>/dev/null
-  wait "$_caffeinate_pid" 2>/dev/null
-  _caffeinate_pid=""
+  if [ "$_w_interrupted" -eq 1 ]; then
+    printf '%s\n' "${YELLOW}⚠️  中断されました。スリープ防止を解除します。${RESET}"
+    printf '\n'
+    read -r -p "Enterで閉じる..." _
+    return 0
+  fi
 
   _ct_notify
   printf '%s\n' "${GREEN}✅ プロセスが終了しました。スリープ防止を解除します。 ($(date "+%H:%M:%S"))${RESET}"
@@ -1010,26 +1100,34 @@ fi
 # -t オプションは使用しない（時間調整による延長に対応するため）。
 # シェル側のカウントダウンループが残り時間を管理し、終了時に kill する。
 printf '%s\n' "${YELLOW}💡 スリープを防止しています... (Ctrl+C で中断)${RESET}"
-printf '%s\n' "  ${CYAN}ℹ️  調整: +30m や -1h を入力して Enter（例: +30m  -1h  +1h30m）${RESET}"
+printf '%s
+' "  ${CYAN}ℹ️  実行中に +30m / -1h などを入力して Enter で残り時間を調整できます。${RESET}"
 printf '\n'
 
 caffeinate -u -d &
 _caffeinate_pid=$!
 
+_ct_adjust_buffer=""
+_ct_interrupted=0
 _ct_start=$(date +%s)
+_ct_begin_interruptible_run
+_ct_timer_ui_begin
 
 while true; do
+  if [ "$_ct_interrupt_requested" -eq 1 ]; then
+    _ct_interrupted=1
+    break
+  fi
+
   _ct_now=$(date +%s)
   _ct_elapsed=$(( _ct_now - _ct_start ))
   _ct_remain=$(( seconds - _ct_elapsed ))
   [ "$_ct_remain" -lt 0 ] && _ct_remain=0
 
-  # 残り時間を HH:MM:SS 形式に変換
   _r_h=$(( _ct_remain / 3600 ))
   _r_m=$(( (_ct_remain % 3600) / 60 ))
   _r_s=$(( _ct_remain % 60 ))
 
-  # プログレスバー（20マス）
   if [ "$seconds" -gt 0 ]; then
     _filled=$(( (seconds - _ct_remain) * 20 / seconds ))
   else
@@ -1039,39 +1137,61 @@ while true; do
   _pct=$(( (seconds - _ct_remain) * 100 / seconds ))
   [ "$_pct" -gt 100 ] && _pct=100
 
-  printf '\r  %s [%s] %3d%%  残り: %02d:%02d:%02d   ' \
+  _ct_status=$(printf '  %s [%s] %3d%%  残り: %02d:%02d:%02d' \
     "${GREEN}▶${RESET}" \
     "$(_ct_bar "$_filled")" \
     "$_pct" \
-    "$_r_h" "$_r_m" "$_r_s"
+    "$_r_h" "$_r_m" "$_r_s")
+  _ct_timer_ui_render "$_ct_status" "$_ct_adjust_buffer"
 
   if [ "$_ct_remain" -eq 0 ]; then break; fi
 
-  # read -t 1: 1秒タイムアウトで1行読み取り。
-  # タイムアウト（戻り値非0）→ ループ継続。
-  # Enter 押下（戻り値0）→ 調整文字列として処理。
-  # read はターミナルへのエコーを維持するため、ユーザーが入力した文字は
-  # カウントダウン行の後ろに自然に表示される（raw モード不要）。
-  if IFS= read -r -t 1 _adj_raw 2>/dev/null; then
-    _adj_delta=$(_ct_parse_adj_secs "$_adj_raw")
-    if [ -n "$_adj_delta" ]; then
-      _ct_now_adj=$(date +%s)
-      _ct_elapsed_adj=$(( _ct_now_adj - _ct_start ))
-      _new_seconds=$(( seconds + _adj_delta ))
-      # 残り時間が0以下にならないよう保護（最低1秒を確保）
-      if [ "$(( _new_seconds - _ct_elapsed_adj ))" -le 0 ]; then
-        _new_seconds=$(( _ct_elapsed_adj + 1 ))
-      fi
-      seconds=$_new_seconds
-    fi
+  # read -n 1 -s: 1文字ずつ（エコーなし）。-t 1: 1秒タイムアウト。
+  # raw/cbreak モードのため Ctrl+C が SIGINT として trap_handler に届く。
+  # deferred interrupt フラグと組み合わせることで確実にループを脱出できる。
+  IFS= read -r -n 1 -s -t 1 _adj_key 2>/dev/null
+  if [ "$?" -eq 0 ]; then
+    case "$_adj_key" in
+      '')
+        # Enter 押下: バッファをパースして時間を調整
+        if [ -n "$_ct_adjust_buffer" ]; then
+          _adj_delta=$(_ct_parse_adj_secs "$_ct_adjust_buffer")
+          _ct_adjust_buffer=""
+          if [ -n "$_adj_delta" ]; then
+            _ct_now_adj=$(date +%s)
+            _ct_elapsed_adj=$(( _ct_now_adj - _ct_start ))
+            _new_seconds=$(( seconds + _adj_delta ))
+            if [ "$(( _new_seconds - _ct_elapsed_adj ))" -le 0 ]; then
+              _new_seconds=$(( _ct_elapsed_adj + 1 ))
+            fi
+            seconds=$_new_seconds
+          fi
+        fi
+        ;;
+      $'\177'|$'\010')
+        # Backspace: バッファ末尾を1文字削除
+        [ "${#_ct_adjust_buffer}" -gt 0 ] && _ct_adjust_buffer="${_ct_adjust_buffer%?}"
+        ;;
+      [0-9a-zA-Z+-])
+        # 英数字・符号のみ受け付ける（ホワイトリスト）。最大20文字。
+        [ "${#_ct_adjust_buffer}" -lt 20 ] && _ct_adjust_buffer="${_ct_adjust_buffer}${_adj_key}"
+        ;;
+    esac
   fi
 done
 
-printf '\r\033[K'
-wait "$_caffeinate_pid" 2>/dev/null
-_caffeinate_pid=""
+_ct_interrupted=$_ct_interrupt_requested
+_ct_timer_ui_clear
+_ct_cleanup_caffeinate
+_ct_end_interruptible_run
 
-# ── 正常終了 ─────────────────────────────────────────────
+# ── 正常終了 / 中断 ─────────────────────────────────────────
+if [ "$_ct_interrupted" -eq 1 ]; then
+  printf '%s\n' "${YELLOW}⚠️  中断されました。スリープ防止を解除します。${RESET}"
+  printf '\n'
+  read -r -p "Enterで閉じる..." _
+  exit 0
+fi
 _ct_notify
 printf '%s\n' "${GREEN}✅ 終了しました。 ($(date "+%H:%M:%S"))${RESET}"
 printf '\n'

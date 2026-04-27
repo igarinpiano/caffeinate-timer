@@ -52,7 +52,7 @@ $RED    = "$E[0;31m"
 $RESET  = "$E[0m"
 
 # ── バージョン定数 ───────────────────────────────────────
-$CURRENT_VERSION = "v1.4.1"
+$CURRENT_VERSION = "v1.4.2"
 
 # ── デスクトップ通知（正常終了時のみ呼び出す）────────────
 # System.Windows.Forms.NotifyIcon によるバルーン通知。
@@ -74,9 +74,10 @@ function Send-CaffeinateNotification {
 }
 
 # ── 時間調整: 差分秒数のパース ─────────────────────────────
-# $AdjStr = 調整文字列（例: +30m, -1h, +1h30m, +90）
+# $AdjStr = 調整文字列（例: +30m, -1h, +1y2mo, +1d3h30m）
 # 成功時は符号付き [long] 秒数を返す。失敗・0秒は $null を返す。
 # セキュリティ: 既存パターンと同一のバリデーションを通す。コマンド実行なし。
+# y/mo: .NET の AddYears()/AddMonths() によるカレンダー演算。
 function Invoke-CaffeinateAdjust {
     param([string]$AdjStr)
     $a    = $AdjStr.Trim()
@@ -84,26 +85,107 @@ function Invoke-CaffeinateAdjust {
     if     ($a.StartsWith('+')) { $a = $a.Substring(1) }
     elseif ($a.StartsWith('-')) { $sign = -1L; $a = $a.Substring(1) }
     $a = $a.Replace(' ', '').ToLower()
-    $a = $a -replace 'hours?',   'h' `
-            -replace 'hrs?',     'h' `
-            -replace 'minutes?', 'm' `
-            -replace 'mins?',    'm' `
-            -replace 'seconds?', 's' `
-            -replace 'secs?',    's'
+    $a = $a -replace 'months?', 'mo' `
+            -replace 'years?',  'y'  `
+            -replace 'yrs?',    'y'  `
+            -replace 'hours?',  'h'  `
+            -replace 'hrs?',    'h'  `
+            -replace 'minutes?','m'  `
+            -replace 'mins?',   'm'  `
+            -replace 'seconds?','s'  `
+            -replace 'secs?',   's'  `
+            -replace 'days?',   'd'
     $a = $a -replace '(?<![0-9])0+(?=[0-9])', ''
-    if ($a.Length -gt 16) { return $null }
+    if ($a.Length -gt 20) { return $null }
+    $yearAdj  = 0L
+    $monthAdj = 0L
+    if ($a -match '^(\d+)y(.*)$') {
+        if ($Matches[1].Length -gt 4) { return $null }
+        $yearAdj = [long]$Matches[1]; $a = $Matches[2]
+    }
+    if ($a -match '^(\d+)mo(.*)$') {
+        if ($Matches[1].Length -gt 4) { return $null }
+        $monthAdj = [long]$Matches[1]; $a = $Matches[2]
+    }
     $sec = 0L
-    if      ($a -match '^(\d+)h(\d+)m(\d+)s$') { $sec = [long]$Matches[1]*3600L + [long]$Matches[2]*60L + [long]$Matches[3] }
-    elseif  ($a -match '^(\d+)h(\d+)m$')        { $sec = [long]$Matches[1]*3600L + [long]$Matches[2]*60L }
-    elseif  ($a -match '^(\d+)h(\d+)s$')        { $sec = [long]$Matches[1]*3600L + [long]$Matches[2] }
-    elseif  ($a -match '^(\d+)m(\d+)s$')        { $sec = [long]$Matches[1]*60L   + [long]$Matches[2] }
-    elseif  ($a -match '^(\d+)h$')              { $sec = [long]$Matches[1]*3600L }
-    elseif  ($a -match '^(\d+)m$')              { $sec = [long]$Matches[1]*60L   }
-    elseif  ($a -match '^(\d+)s$')              { $sec = [long]$Matches[1]       }
-    elseif  ($a -match '^(\d+)$')               { $sec = [long]$Matches[1]*60L   }
+    if      ($a -eq '')                                { $sec = 0L }
+    elseif  ($a -match '^(\d+)d(\d+)h(\d+)m(\d+)s$') { $sec = [long]$Matches[1]*86400L + [long]$Matches[2]*3600L + [long]$Matches[3]*60L + [long]$Matches[4] }
+    elseif  ($a -match '^(\d+)d(\d+)h(\d+)m$')       { $sec = [long]$Matches[1]*86400L + [long]$Matches[2]*3600L + [long]$Matches[3]*60L }
+    elseif  ($a -match '^(\d+)d(\d+)h(\d+)s$')       { $sec = [long]$Matches[1]*86400L + [long]$Matches[2]*3600L + [long]$Matches[3] }
+    elseif  ($a -match '^(\d+)d(\d+)m(\d+)s$')       { $sec = [long]$Matches[1]*86400L + [long]$Matches[2]*60L   + [long]$Matches[3] }
+    elseif  ($a -match '^(\d+)d(\d+)h$')              { $sec = [long]$Matches[1]*86400L + [long]$Matches[2]*3600L }
+    elseif  ($a -match '^(\d+)d(\d+)m$')              { $sec = [long]$Matches[1]*86400L + [long]$Matches[2]*60L }
+    elseif  ($a -match '^(\d+)d(\d+)s$')              { $sec = [long]$Matches[1]*86400L + [long]$Matches[2] }
+    elseif  ($a -match '^(\d+)d$')                    { $sec = [long]$Matches[1]*86400L }
+    elseif  ($a -match '^(\d+)h(\d+)m(\d+)s$')       { $sec = [long]$Matches[1]*3600L + [long]$Matches[2]*60L + [long]$Matches[3] }
+    elseif  ($a -match '^(\d+)h(\d+)m$')              { $sec = [long]$Matches[1]*3600L + [long]$Matches[2]*60L }
+    elseif  ($a -match '^(\d+)h(\d+)s$')              { $sec = [long]$Matches[1]*3600L + [long]$Matches[2] }
+    elseif  ($a -match '^(\d+)m(\d+)s$')              { $sec = [long]$Matches[1]*60L   + [long]$Matches[2] }
+    elseif  ($a -match '^(\d+)h$')                    { $sec = [long]$Matches[1]*3600L }
+    elseif  ($a -match '^(\d+)m$')                    { $sec = [long]$Matches[1]*60L }
+    elseif  ($a -match '^(\d+)s$')                    { $sec = [long]$Matches[1] }
+    elseif  ($a -match '^(\d+)$')                     { $sec = [long]$Matches[1]*60L }
     else { return $null }
-    if ($sec -eq 0L) { return $null }
-    return ($sign * $sec)
+    $totalSec = $sec
+    if ($yearAdj -gt 0 -or $monthAdj -gt 0) {
+        try {
+            $_nc  = Get-Date
+            $_fc  = $_nc.AddYears([int]$yearAdj).AddMonths([int]$monthAdj)
+            $totalSec = [long]($_fc - $_nc).TotalSeconds + $sec
+        } catch { return $null }
+    }
+    if ($totalSec -eq 0L) { return $null }
+    return ($sign * $totalSec)
+}
+
+$script:CaffeinateTimerUiTop    = -1
+$script:CaffeinateTimerUiActive = $false
+
+function Start-CaffeinateTimerUi {
+    try {
+        $script:CaffeinateTimerUiTop = [Console]::CursorTop
+        Write-Host ""
+        Write-Host ""
+        $script:CaffeinateTimerUiActive = $true
+    } catch {
+        $script:CaffeinateTimerUiTop    = -1
+        $script:CaffeinateTimerUiActive = $false
+    }
+}
+
+function Write-CaffeinateTimerUi {
+    param(
+        [string]$StatusLine,
+        [string]$InputBuffer
+    )
+    if (-not $script:CaffeinateTimerUiActive) { Start-CaffeinateTimerUi }
+    if (-not $script:CaffeinateTimerUiActive) {
+        Write-Host -NoNewline ("`r{0}" -f $StatusLine)
+        return
+    }
+    try {
+        [Console]::SetCursorPosition(0, $script:CaffeinateTimerUiTop)
+        Write-Host -NoNewline ("{0}{1}" -f "$E[2K", $StatusLine)
+        [Console]::SetCursorPosition(0, $script:CaffeinateTimerUiTop + 1)
+        Write-Host -NoNewline ("{0}  {1}調整{2} {3}" -f "$E[2K", $CYAN, $RESET, $InputBuffer)
+    } catch {
+        $script:CaffeinateTimerUiTop    = -1
+        $script:CaffeinateTimerUiActive = $false
+        Write-Host -NoNewline ("`r{0}" -f $StatusLine)
+    }
+}
+
+function Clear-CaffeinateTimerUi {
+    if (-not $script:CaffeinateTimerUiActive) { return }
+    try {
+        [Console]::SetCursorPosition(0, $script:CaffeinateTimerUiTop)
+        Write-Host -NoNewline "$E[2K"
+        [Console]::SetCursorPosition(0, $script:CaffeinateTimerUiTop + 1)
+        Write-Host -NoNewline "$E[2K"
+        [Console]::SetCursorPosition(0, $script:CaffeinateTimerUiTop)
+    } catch {}
+    $script:CaffeinateTimerUiTop    = -1
+    $script:CaffeinateTimerUiActive = $false
 }
 
 # ── /wait モード: プロセス監視 ───────────────────────────
@@ -678,7 +760,7 @@ if ($bgMode) {
 }
 
 Write-Host "${YELLOW}💡 スリープを防止しています... (Ctrl+C で中断)${RESET}"
-Write-Host "  ${CYAN}ℹ️  調整: +30m や -1h を入力して Enter（例: +30m  -1h  +1h30m）${RESET}"
+Write-Host "  ${CYAN}ℹ️  実行中に +30m / -1h などを入力して Enter で残り時間を調整できます。${RESET}"
 Write-Host ""
 
 # ── スリープ防止 開始 ────────────────────────────────────
@@ -693,32 +775,29 @@ try { [Console]::TreatControlCAsInput = $true } catch {}
 $adjStart    = Get-Date
 $targetTime  = $adjStart.AddSeconds($seconds)
 $interrupted = $false
-$lastSec     = -1
 $adjBuffer   = ''
+Start-CaffeinateTimerUi
 
 # ── try/finally でクリーンアップを保証 ──────────────────
 # 異常終了・Terminating Error 発生時でも TreatControlCAsInput の
 # リセットとスリープ防止の解除が必ず実行されるようにする。
 try {
     while ((Get-Date) -lt $targetTime) {
-        # ── カウントダウン表示（1秒ごとに更新）──────────────
+        # ── カウントダウン表示（毎フレーム更新）──────────────
         $remain = [long][Math]::Ceiling(($targetTime - (Get-Date)).TotalSeconds)
         if ($remain -lt 0) { $remain = 0 }
-        $curSec = [int]$remain
-        if ($curSec -ne $lastSec) {
-            $lastSec = $curSec
-            $rH      = [int][Math]::Floor($remain / 3600)
-            $rM      = [int][Math]::Floor(($remain % 3600) / 60)
-            $rS      = [int]($remain % 60)
-            $elapsed_bar = [long][Math]::Floor(((Get-Date) - $adjStart).TotalSeconds)
-            if ($elapsed_bar -lt 0) { $elapsed_bar = 0 }
-            $filled  = if ($seconds -gt 0) { [int][Math]::Floor($elapsed_bar * 20 / $seconds) } else { 20 }
-            if ($filled -gt 20) { $filled = 20 }
-            $pct = if ($seconds -gt 0) { [int][Math]::Floor($elapsed_bar * 100 / $seconds) } else { 100 }
-            if ($pct -gt 100) { $pct = 100 }
-            $bar = ('█' * $filled) + ('░' * (20 - $filled))
-            Write-Host -NoNewline ("`r  ${GREEN}▶${RESET} [$bar] $pct%  残り: {0:D2}:{1:D2}:{2:D2}   " -f $rH, $rM, $rS)
-        }
+        $rH      = [int][Math]::Floor($remain / 3600)
+        $rM      = [int][Math]::Floor(($remain % 3600) / 60)
+        $rS      = [int]($remain % 60)
+        $elapsed_bar = [long][Math]::Floor(((Get-Date) - $adjStart).TotalSeconds)
+        if ($elapsed_bar -lt 0) { $elapsed_bar = 0 }
+        $filled  = if ($seconds -gt 0) { [int][Math]::Floor($elapsed_bar * 20 / $seconds) } else { 20 }
+        if ($filled -gt 20) { $filled = 20 }
+        $pct = if ($seconds -gt 0) { [int][Math]::Floor($elapsed_bar * 100 / $seconds) } else { 100 }
+        if ($pct -gt 100) { $pct = 100 }
+        $bar = ('█' * $filled) + ('░' * (20 - $filled))
+        $statusLine = "  ${GREEN}▶${RESET} [$bar] $pct%  残り: {0:D2}:{1:D2}:{2:D2}" -f $rH, $rM, $rS
+        Write-CaffeinateTimerUi -StatusLine $statusLine -InputBuffer $adjBuffer
 
         Start-Sleep -Milliseconds 200
         try {
@@ -755,6 +834,7 @@ try {
         if ($interrupted) { break }  # 外側の while (targetTime) を抜ける
     }
 } finally {
+    Clear-CaffeinateTimerUi
     # ── TreatControlCAsInput リセット ───────────────────
     try { [Console]::TreatControlCAsInput = $false } catch {}
     # ── スリープ防止 解除 ────────────────────────────────
