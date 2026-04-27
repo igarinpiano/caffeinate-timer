@@ -23,6 +23,7 @@ trap_handler() {
     _ct_interrupt_requested=1
     return
   fi
+  trap - INT
   printf '\r\033[K'
   printf '\n'
   printf '%s\n' "${YELLOW}⚠️  中断されました。スリープ防止を解除します。${RESET}"
@@ -52,7 +53,7 @@ _ct_cleanup_caffeinate() {
 }
 
 # ── バージョン・アップデート設定 ─────────────────────────
-CURRENT_VERSION="v1.4.2"
+CURRENT_VERSION="v1.4.3"
 _CT_VERSIONS_URL="https://raw.githubusercontent.com/igarinpiano/caffeinate-timer/main/versions.txt"
 _CT_RELEASES_BASE="https://github.com/igarinpiano/caffeinate-timer/releases/download"
 _CT_SCRIPT_FILENAME="caffeinate-timer-universal.sh"
@@ -84,6 +85,7 @@ _ct_fetch_versions() {
   if command -v curl &>/dev/null; then
     _content=$(curl -fsSL \
       --proto '=https' \
+      --tlsv1.2 \
       --max-time 15 \
       --max-redirs 5 \
       "$_CT_VERSIONS_URL" 2>/dev/null) || return 1
@@ -151,6 +153,7 @@ _ct_download_replace() {
     curl -fL \
       --progress-bar \
       --proto '=https' \
+      --tlsv1.2 \
       --max-time 60 \
       --max-redirs 5 \
       "$_url" -o "$_tmp"
@@ -212,6 +215,7 @@ _ct_download_replace() {
   if command -v curl &>/dev/null; then
     _cs_content=$(curl -fsSL \
       --proto '=https' \
+      --tlsv1.2 \
       --max-time 15 \
       --max-redirs 5 \
       "$_cs_url" 2>/dev/null | tr -d '\r')
