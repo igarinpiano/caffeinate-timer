@@ -52,7 +52,7 @@ $RED    = "$E[0;31m"
 $RESET  = "$E[0m"
 
 # ── バージョン定数 ───────────────────────────────────────
-$CURRENT_VERSION = "v1.4.3"
+$CURRENT_VERSION = "v1.4.4"
 
 # ── デスクトップ通知（正常終了時のみ呼び出す）────────────
 # System.Windows.Forms.NotifyIcon によるバルーン通知。

@@ -52,7 +52,7 @@ _ct_cleanup_caffeinate() {
 }
 
 # ── バージョン・アップデート設定 ─────────────────────────
-CURRENT_VERSION="v1.4.3"
+CURRENT_VERSION="v1.4.4"
 _CT_VERSIONS_URL="https://raw.githubusercontent.com/igarinpiano/caffeinate-timer/main/versions.txt"
 _CT_RELEASES_BASE="https://github.com/igarinpiano/caffeinate-timer/releases/download"
 _CT_SCRIPT_FILENAME="caffeinate-timer.command"
@@ -90,9 +90,12 @@ _ct_fetch_versions() {
 }
 
 # ── アップデート: ダウンロード・自己置換 ─────────────────
-# 処理順: tmpファイル作成 → DL → 非空チェック → shebang確認
+# 処理順: セキュアな一時ディレクトリ作成（700）→ DL → 非空チェック → shebang確認
 #         → SHA-256検証 → 実行権限付与 → アトミック mv → exec で再起動
-# 各ステップ失敗時は tmp を削除して中断（スクリプト本体は変更されない）。
+# 一時ディレクトリ（パーミッション700）内で全検証を完結させることで、
+# ハッシュ検証完了から mv までの間にファイルをすり替えられる
+# 競合状態（TOCTOU: Time-of-Check to Time-of-Use）を防止する。
+# 各ステップ失敗時は一時ディレクトリを削除して中断（スクリプト本体は変更されない）。
 _ct_download_replace() {
   local _version="$1"
 
@@ -107,20 +110,26 @@ _ct_download_replace() {
   # URL はバリデーション済みバージョン文字列からのみ構成する
   local _url="${_CT_RELEASES_BASE}/${_version}/${_CT_SCRIPT_FILENAME}"
 
-  # 一時ファイル作成
+  # セキュアな一時ディレクトリを作成（TOCTOU 対策）
+  # mktemp -d はパーミッション 700 のディレクトリを作成する。
+  # 所有者以外はアクセスできないため、検証完了から mv までの間の
+  # ファイルすり替えを防止できる。
   # スクリプト本体と同一ディレクトリへの作成を優先し、mv のアトミック性を保証する。
   # ディレクトリへの書き込みが不可の場合のみ /tmp にフォールバックする。
+  local _tmpdir
   local _tmp
   local _script_dir
   _script_dir="$(dirname "$_CT_SCRIPT_PATH")"
-  if ! _tmp=$(mktemp "${_script_dir}/.ct-update.XXXXXX" 2>/dev/null); then
-    _tmp=$(mktemp /tmp/caffeinate-timer.XXXXXX) || {
-      printf '%s\n' "${RED}❌ 一時ファイルの作成に失敗しました。ディスクの空き容量を確認してください。${RESET}"
+  if ! _tmpdir=$(mktemp -d "${_script_dir}/.ct-updatedir.XXXXXX" 2>/dev/null); then
+    _tmpdir=$(mktemp -d /tmp/caffeinate-timer-dir.XXXXXX 2>/dev/null) || {
+      printf '%s\n' "${RED}❌ 一時ディレクトリの作成に失敗しました。ディスクの空き容量を確認してください。${RESET}"
       printf '\n'
       read -r -p "Enterで閉じる..." _
       exit 1
     }
   fi
+  chmod 700 "$_tmpdir" 2>/dev/null
+  _tmp="${_tmpdir}/${_CT_SCRIPT_FILENAME}"
 
   printf '%s\n' "  ${BOLD}${_version}${RESET} をダウンロードしています..."
 
@@ -136,7 +145,7 @@ _ct_download_replace() {
   printf '\n'
 
   if [ "$_curl_exit" -ne 0 ]; then
-    rm -f "$_tmp"
+    rm -rf "$_tmpdir"
     printf '%s\n' "${RED}❌ ダウンロードに失敗しました。（curl 終了コード: ${_curl_exit}）${RESET}"
     printf '%s\n' "  ・ネットワーク接続を確認してください。"
     printf '%s\n' "  ・バージョン ${_version} がリリースに存在しない可能性があります。"
@@ -148,7 +157,7 @@ _ct_download_replace() {
 
   # 空ファイルチェック
   if [ ! -s "$_tmp" ]; then
-    rm -f "$_tmp"
+    rm -rf "$_tmpdir"
     printf '%s\n' "${RED}❌ ダウンロードしたファイルが空です。アップデートを中止します。${RESET}"
     printf '\n'
     read -r -p "Enterで閉じる..." _
@@ -161,7 +170,7 @@ _ct_download_replace() {
   case "$_first_line" in
     '#!/bin/bash'|'#!/usr/bin/env bash'|'#!/bin/sh'|'#!/usr/bin/env sh') ;;
     *)
-      rm -f "$_tmp"
+      rm -rf "$_tmpdir"
       printf '%s\n' "${RED}❌ ダウンロードしたファイルの形式が不正です。アップデートを中止します。${RESET}"
       printf '%s\n' "  （予期しない内容: ${_first_line:0:60}）"
       printf '\n'
@@ -197,7 +206,7 @@ _ct_download_replace() {
       fi
       if [ -n "$_actual_hash" ]; then
         if [ "$_actual_hash" != "$_expected_hash" ]; then
-          rm -f "$_tmp"
+          rm -rf "$_tmpdir"
           printf '%s\n' "${RED}❌ ファイルの整合性検証に失敗しました。アップデートを中止します。${RESET}"
           printf '\n'
           read -r -p "Enterで閉じる..." _
@@ -219,7 +228,7 @@ _ct_download_replace() {
   local _orig_perms
   _orig_perms=$(stat -f "%A" "$_CT_SCRIPT_PATH" 2>/dev/null) || _orig_perms="755"
   chmod "$_orig_perms" "$_tmp" || {
-    rm -f "$_tmp"
+    rm -rf "$_tmpdir"
     printf '%s\n' "${RED}❌ 実行権限の付与に失敗しました。アップデートを中止します。${RESET}"
     printf '\n'
     read -r -p "Enterで閉じる..." _
@@ -235,7 +244,7 @@ _ct_download_replace() {
     # これにより、シンボリックリンク経由でのリンク先の意図しない上書きも防止できる。
     # rm に失敗しても cp を試みる（エラーは cp 側でキャッチ）。
     # rm 成功後に cp が失敗した場合はダウンロード済みファイルのパスを表示して
-    # ユーザーが手動で回復できるようにする（tmp を削除しない）。
+    # ユーザーが手動で回復できるようにする（一時ディレクトリは削除しない）。
     rm -f "$_CT_SCRIPT_PATH" 2>/dev/null
     if ! cp "$_tmp" "$_CT_SCRIPT_PATH" 2>/dev/null; then
       printf '%s\n' "${RED}❌ ファイルの書き換えに失敗しました。アップデートを中止します。${RESET}"
@@ -246,7 +255,9 @@ _ct_download_replace() {
       read -r -p "Enterで閉じる..." _
       exit 1
     fi
-    rm -f "$_tmp"
+    rm -rf "$_tmpdir"
+  else
+    rm -rf "$_tmpdir"
   fi
 
   printf '%s\n' "${GREEN}✅ バージョン ${_version} にアップデートしました。再起動します。${RESET}"
