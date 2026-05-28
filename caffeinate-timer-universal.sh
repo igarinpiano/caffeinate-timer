@@ -53,7 +53,7 @@ _ct_cleanup_caffeinate() {
 }
 
 # ── バージョン・アップデート設定 ─────────────────────────
-CURRENT_VERSION="v1.4.4"
+CURRENT_VERSION="v1.4.5"
 _CT_VERSIONS_URL="https://raw.githubusercontent.com/igarinpiano/caffeinate-timer/main/versions.txt"
 _CT_RELEASES_BASE="https://github.com/igarinpiano/caffeinate-timer/releases/download"
 _CT_SCRIPT_FILENAME="caffeinate-timer-universal.sh"
@@ -795,7 +795,6 @@ printf '%s\n' "  ${CYAN}90${RESET}           → 90分"
 printf '%s\n' "  ${CYAN}1:30:00${RESET}      → 1時間30分0秒"
 printf '%s\n' "  ${CYAN}1:30${RESET}         → 1分30秒"
 printf '%s\n' "  ${CYAN}1:2:3:4${RESET}      → 1日2時間3分4秒"
-printf '%s\n' "  ${CYAN}1:2:3:4:5${RESET}    → 1ヶ月2日3時間4分5秒"
 printf '%s\n' "  ${CYAN}1:2:3:4:5:6${RESET}  → 1年2ヶ月3日4時間5分6秒"
 printf '%s\n' "  ${CYAN}1y / 1year${RESET}   → 1年"
 printf '%s\n' "  ${CYAN}2mo / 2month${RESET} → 2ヶ月"
@@ -804,13 +803,10 @@ printf '%s\n' "  ${CYAN}1h / 1hour${RESET}   → 1時間"
 printf '%s\n' "  ${CYAN}45m / 45min${RESET}  → 45分"
 printf '%s\n' "  ${CYAN}20s / 20sec${RESET}  → 20秒"
 printf '%s\n' "  ${CYAN}1h30m20s${RESET}     → 1時間30分20秒"
-printf '%s\n' "  ${CYAN}1h20s${RESET}        → 1時間20秒"
 printf '%s\n' "  ${CYAN}1.5h${RESET}         → 1時間30分"
-printf '%s\n' "  ${CYAN}1y2mo${RESET}        → 1年2ヶ月"
-printf '%s\n' "  ${CYAN}1y2mo3h30m${RESET}   → 1年2ヶ月3時間30分"
-printf '%s\n' "  ${CYAN}1d3h30m${RESET}      → 1日3時間30分"
+printf '%s\n' "  ${CYAN}/until <時刻>${RESET} → 指定時刻まで実行（例: /until 18:30）"
 printf '%s\n' "  ${CYAN}/wait <名前>${RESET}  → プロセス終了まで待機"
-printf '%s\n' "  ${CYAN}/bg <時間>${RESET}    → バックグラウンドで実行"
+printf '%s\n' "  ${CYAN}/bg <時間>${RESET}    → バックグラウンドで実行（例: /bg 90）"
 printf '%s\n' "  ${CYAN}/settings${RESET}    → 設定"
 printf '\n'
 read -r -p "入力: " input
@@ -1231,9 +1227,9 @@ if [ "$_bg_mode" -eq 1 ]; then
   printf '%s\n' "${YELLOW}🔄 バックグラウンドで実行します。終了時に通知が届きます。${RESET}"
   printf '\n'
   if [[ "$OS" == "Darwin" ]]; then
-    nohup bash -c "caffeinate -u -d -t ${seconds}; \
-      osascript -e 'display notification \"スリープ防止が終了しました。\" with title \"Caffeinate Timer ☕\"' \
-      >/dev/null 2>&1" >/dev/null 2>&1 &
+    nohup bash -c 'caffeinate -u -d -t "$1"; \
+      osascript -e '\''display notification "スリープ防止が終了しました。" with title "Caffeinate Timer ☕"'\'' \
+      >/dev/null 2>&1' -- "$seconds" >/dev/null 2>&1 &
   else
     # Linux: systemd-inhibit が使える場合はそちらを優先。
     # DISPLAY / DBUS_SESSION_BUS_ADDRESS を明示的にエクスポートして
@@ -1241,20 +1237,20 @@ if [ "$_bg_mode" -eq 1 ]; then
     export DISPLAY="${DISPLAY:-}"
     export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-}"
     if command -v systemd-inhibit &>/dev/null; then
-      nohup bash -c "systemd-inhibit \
+      nohup bash -c 'systemd-inhibit \
         --what=sleep:idle \
-        --who='Caffeinate Timer' \
-        --why='User requested caffeinate timer' \
+        --who="Caffeinate Timer" \
+        --why="User requested caffeinate timer" \
         --mode=block \
-        sleep ${seconds} >/dev/null 2>&1; \
+        sleep "$1" >/dev/null 2>&1; \
         command -v notify-send >/dev/null 2>&1 && \
-          notify-send 'Caffeinate Timer ☕' 'スリープ防止が終了しました。' \
-          >/dev/null 2>&1 || true" >/dev/null 2>&1 &
+          notify-send "Caffeinate Timer ☕" "スリープ防止が終了しました。" \
+          >/dev/null 2>&1 || true' -- "$seconds" >/dev/null 2>&1 &
     else
-      nohup bash -c "sleep ${seconds}; \
+      nohup bash -c 'sleep "$1"; \
         command -v notify-send >/dev/null 2>&1 && \
-          notify-send 'Caffeinate Timer ☕' 'スリープ防止が終了しました。' \
-          >/dev/null 2>&1 || true" >/dev/null 2>&1 &
+          notify-send "Caffeinate Timer ☕" "スリープ防止が終了しました。" \
+          >/dev/null 2>&1 || true' -- "$seconds" >/dev/null 2>&1 &
     fi
   fi
   disown
