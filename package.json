@@ -1,0 +1,36 @@
+{
+  "name": "caffeinate-timer",
+  "version": "1.4.5",
+  "description": "Sleep prevention timer for macOS, Linux, and Windows",
+  "bin": {
+    "caffeinate-timer": "bin/caffeinate-timer.js"
+  },
+  "files": [
+    "bin/",
+    "caffeinate-timer.command",
+    "caffeinate-timer-universal.sh",
+    "caffeinate-timer-windows.bat"
+  ],
+  "keywords": [
+    "caffeinate",
+    "sleep",
+    "timer",
+    "cli",
+    "macos",
+    "linux",
+    "windows",
+    "sleep-prevention"
+  ],
+  "homepage": "https://github.com/igarinpiano/caffeinate-timer",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/igarinpiano/caffeinate-timer.git"
+  },
+  "bugs": {
+    "url": "https://github.com/igarinpiano/caffeinate-timer/issues"
+  },
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=12"
+  }
+}

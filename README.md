@@ -61,6 +61,35 @@ macOS 標準の `caffeinate` コマンド（`-u` および `-d` フラグ）、L
 ---
 
 <details>
+<summary>インストール方法 / Installation</summary>
+
+### npm（全プラットフォーム）
+
+Node.js（v12以上）がインストールされている場合:
+
+```
+npm install -g caffeinate-timer
+```
+
+インストール後はターミナルから `caffeinate-timer` で起動できます。
+
+### curl（macOS / Linux）
+
+```
+curl -fsSL https://raw.githubusercontent.com/igarinpiano/caffeinate-timer/main/install.sh | bash
+```
+
+`~/.local/bin/caffeinate-timer` にインストールされます。ダウンロード後に SHA-256 チェックサムを自動検証します。初回は `~/.local/bin` を PATH に追加する必要がある場合があります（スクリプトが案内します）。
+
+### GitHub Releases（全プラットフォーム・手動）
+
+[使い方 / Usage](#使い方--usage) セクションの手順に従ってください。
+
+</details>
+
+---
+
+<details>
 <summary>使い方 / Usage</summary>
 
 ### macOS（`caffeinate-timer.command`）
@@ -266,6 +295,10 @@ caffeinate-timer/
 ├── caffeinate-timer.command       # macOS 専用
 ├── caffeinate-timer-windows.bat   # Windows 専用
 ├── caffeinate-timer-universal.sh  # macOS / Linux 対応
+├── bin/
+│   └── caffeinate-timer.js        # npm 用起動ラッパー
+├── install.sh                     # curl インストーラー（macOS / Linux）
+├── package.json                   # npm パッケージ定義
 └── README.md
 ```
 
