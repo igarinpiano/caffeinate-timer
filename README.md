@@ -83,7 +83,7 @@ curl -fsSL https://raw.githubusercontent.com/igarinpiano/caffeinate-timer/main/i
 
 ### GitHub Releases（全プラットフォーム・手動）
 
-[使い方 / Usage](#使い方--usage) セクションの手順に従ってください。
+[使い方 / Usage](#macoscaffeinate-timercommand) セクションの手順に従ってください。
 
 </details>
 
