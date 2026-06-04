@@ -73,6 +73,13 @@ npm install -g caffeinate-timer
 
 インストール後はターミナルから `caffeinate-timer` で起動できます。
 
+> **Note (Linux):** `apt` などシステムのパッケージマネージャーで Node.js をインストールしている場合、`sudo npm install -g` が必要になることがあります。ただし sudo の使用は推奨されません。mise・nvm・fnm などのユーザーローカルな Node.js バージョンマネージャーを使用するか、以下の設定で sudo を不要にできます。
+> ```
+> mkdir -p ~/.npm-global
+> npm config set prefix ~/.npm-global
+> export PATH="$HOME/.npm-global/bin:$PATH"  # ~/.bashrc または ~/.profile に追記
+> ```
+
 ### curl（macOS / Linux）
 
 ```
