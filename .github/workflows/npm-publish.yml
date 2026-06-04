@@ -33,4 +33,4 @@ jobs:
           npm pkg set version="${VERSION#v}"
 
       - name: Publish to npm
-        run: npm publish --provenance
+        run: npm publish --provenance || { cat /home/runner/.npm/_logs/*.log; exit 1; }
