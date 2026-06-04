@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 
-const { spawnSync } = require('child_process');
+const { spawn } = require('child_process');
 const { chmodSync, existsSync } = require('fs');
 const path = require('path');
 
@@ -32,10 +32,25 @@ if (platform !== 'win32' && existsSync(script)) {
   try { chmodSync(script, 0o755); } catch (_) {}
 }
 
-const result = spawnSync(cmd, args, { stdio: 'inherit' });
+const child = spawn(cmd, args, { stdio: 'inherit' });
 
-// Re-raise the signal so the shell sees the correct exit status
-if (result.signal) {
-  process.kill(process.pid, result.signal);
-}
-process.exit(result.status != null ? result.status : 1);
+// Ctrl+C (SIGINT) is delivered to the entire process group, so the shell
+// script receives it directly and runs its own trap handler.  Suppress the
+// default Node.js exit here so stdin stays valid while the script finishes
+// its interrupt handling.
+process.on('SIGINT', () => {});
+
+// Forward SIGTERM to the child so an external kill reaches the script.
+process.on('SIGTERM', () => { child.kill('SIGTERM'); });
+
+child.on('error', (err) => {
+  process.stderr.write('Failed to start: ' + err.message + '\n');
+  process.exit(1);
+});
+
+child.on('exit', (code, signal) => {
+  if (signal) {
+    process.kill(process.pid, signal);
+  }
+  process.exit(code != null ? code : 1);
+});
