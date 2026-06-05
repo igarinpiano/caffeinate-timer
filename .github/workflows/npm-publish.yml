@@ -34,6 +34,10 @@ jobs:
           npm pkg set version="${VERSION#v}"
 
       - name: Publish to npm
-        run: npm publish --provenance
-        env:
-          NODE_AUTH_TOKEN: ''  # Clear GITHUB_TOKEN set by setup-node; let npm use OIDC (Trusted Publishing)
+        run: |
+          # setup-node sets NODE_AUTH_TOKEN to GITHUB_TOKEN via GITHUB_ENV,
+          # which step-level env: cannot override. Unset at shell level so npm
+          # falls through to OIDC exchange (Trusted Publishing).
+          unset NODE_AUTH_TOKEN
+          unset NPM_CONFIG_USERCONFIG
+          npm publish --provenance
