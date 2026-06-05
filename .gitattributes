@@ -1,0 +1,9 @@
+# Default: normalize text files to LF on commit
+* text=auto eol=lf
+
+# Shell scripts must be LF
+*.sh      text eol=lf
+*.command text eol=lf
+
+# Windows batch files must be CRLF
+*.bat     text eol=crlf
