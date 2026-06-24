@@ -52,7 +52,7 @@ _ct_cleanup_caffeinate() {
 }
 
 # ── バージョン・アップデート設定 ─────────────────────────
-CURRENT_VERSION="v1.4.6"
+CURRENT_VERSION="v1.4.7"
 _CT_VERSIONS_URL="https://raw.githubusercontent.com/igarinpiano/caffeinate-timer/main/versions.txt"
 _CT_RELEASES_BASE="https://github.com/igarinpiano/caffeinate-timer/releases/download"
 _CT_SCRIPT_FILENAME="caffeinate-timer.command"
@@ -171,18 +171,28 @@ _ct_download_replace() {
     '#!/bin/bash'|'#!/usr/bin/env bash'|'#!/bin/sh'|'#!/usr/bin/env sh') ;;
     *)
       rm -rf "$_tmpdir"
+      # 表示前に制御文字（ANSIエスケープ等）を除去する。
+      # 信頼できないダウンロード内容をそのまま端末へ出すと
+      # エスケープシーケンス注入を許すため、C0制御文字とDELを落とす。
+      # UTF-8の継続/先頭バイトは0x80以上なので日本語等は保持される。
+      local _safe_first
+      _safe_first=$(printf '%s' "${_first_line:0:60}" | LC_ALL=C tr -d '\000-\037\177')
       printf '%s\n' "${RED}❌ ダウンロードしたファイルの形式が不正です。アップデートを中止します。${RESET}"
-      printf '%s\n' "  （予期しない内容: ${_first_line:0:60}）"
+      printf '%s\n' "  （予期しない内容: ${_safe_first}）"
       printf '\n'
       read -r -p "Enterで閉じる..." _
       exit 1
       ;;
   esac
 
-  # SHA-256 整合性検証（リリースの checksums.txt を参照）
-  # ハッシュが一致しない場合はアップデートを中止する。
-  # checksums.txt が取得できない場合（古いリリースへのダウングレード等）は
-  # 警告を表示して続行する（後方互換性）。
+  # SHA-256 整合性検証（リリースの checksums.txt を参照）— fail-closed
+  # 検証できない場合はアップデートを中止する（検証なしでの自己置換を許さない）:
+  #   ・checksums.txt を取得できない
+  #   ・checksums.txt に対象ファイルのエントリが無い
+  #   ・ハッシュが一致しない
+  #   ・ローカルに SHA-256 計算ツールが無く検証不能
+  # v1.3.0 以降の全リリースには checksums.txt が添付済みのため、
+  # 過去バージョンへのダウングレードを含めて通常運用では中止されない。
   local _cs_url="${_CT_RELEASES_BASE}/${_version}/checksums.txt"
   local _cs_content=""
   _cs_content=$(curl -fsSL \
@@ -191,37 +201,48 @@ _ct_download_replace() {
     --max-time 15 \
     --max-redirs 5 \
     "$_cs_url" 2>/dev/null | tr -d '\r')
-  if [ -n "$_cs_content" ]; then
-    local _expected_hash=""
-    _expected_hash=$(printf '%s\n' "$_cs_content" | awk -v fn="$_CT_SCRIPT_FILENAME" '{
-      sub(/^\.\//, "", $2)
-      if ($2 == fn && length($1) == 64 && $1 ~ /^[0-9a-f]+$/) { print $1; exit }
-    }')
-    if [ -n "$_expected_hash" ] && [[ "$_expected_hash" =~ ^[0-9a-f]{64}$ ]]; then
-      local _actual_hash=""
-      if command -v shasum &>/dev/null; then
-        _actual_hash=$(shasum -a 256 "$_tmp" | awk '{print $1}')
-      elif command -v sha256sum &>/dev/null; then
-        _actual_hash=$(sha256sum "$_tmp" | awk '{print $1}')
-      fi
-      if [ -n "$_actual_hash" ]; then
-        if [ "$_actual_hash" != "$_expected_hash" ]; then
-          rm -rf "$_tmpdir"
-          printf '%s\n' "${RED}❌ ファイルの整合性検証に失敗しました。アップデートを中止します。${RESET}"
-          printf '\n'
-          read -r -p "Enterで閉じる..." _
-          exit 1
-        fi
-        printf '%s\n' "${GREEN}✅ 整合性を確認しました（SHA-256）。${RESET}"
-      else
-        printf '%s\n' "${YELLOW}⚠️  SHA-256 検証ツールが見つかりません。検証をスキップします。${RESET}"
-      fi
-    else
-      printf '%s\n' "${YELLOW}⚠️  このバージョンのチェックサムが見つかりません。検証をスキップします。${RESET}"
-    fi
-  else
-    printf '%s\n' "${YELLOW}⚠️  チェックサムファイルを取得できませんでした。検証をスキップします。${RESET}"
+  if [ -z "$_cs_content" ]; then
+    rm -rf "$_tmpdir"
+    printf '%s\n' "${RED}❌ チェックサムファイルを取得できませんでした。検証できないためアップデートを中止します。${RESET}"
+    printf '%s\n' "  ・ネットワーク接続を確認してください。"
+    printf '%s\n' "  ・このバージョンに checksums.txt が無い場合は手動での導入をご検討ください。"
+    printf '\n'
+    read -r -p "Enterで閉じる..." _
+    exit 1
   fi
+  local _expected_hash=""
+  _expected_hash=$(printf '%s\n' "$_cs_content" | awk -v fn="$_CT_SCRIPT_FILENAME" '{
+    sub(/^\.\//, "", $2)
+    if ($2 == fn && length($1) == 64 && $1 ~ /^[0-9a-f]+$/) { print $1; exit }
+  }')
+  if [ -z "$_expected_hash" ] || ! [[ "$_expected_hash" =~ ^[0-9a-f]{64}$ ]]; then
+    rm -rf "$_tmpdir"
+    printf '%s\n' "${RED}❌ このバージョンのチェックサムが見つかりません。検証できないためアップデートを中止します。${RESET}"
+    printf '\n'
+    read -r -p "Enterで閉じる..." _
+    exit 1
+  fi
+  local _actual_hash=""
+  if command -v shasum &>/dev/null; then
+    _actual_hash=$(shasum -a 256 "$_tmp" | awk '{print $1}')
+  elif command -v sha256sum &>/dev/null; then
+    _actual_hash=$(sha256sum "$_tmp" | awk '{print $1}')
+  fi
+  if [ -z "$_actual_hash" ]; then
+    rm -rf "$_tmpdir"
+    printf '%s\n' "${RED}❌ SHA-256 検証ツール（shasum / sha256sum）が見つかりません。検証できないためアップデートを中止します。${RESET}"
+    printf '\n'
+    read -r -p "Enterで閉じる..." _
+    exit 1
+  fi
+  if [ "$_actual_hash" != "$_expected_hash" ]; then
+    rm -rf "$_tmpdir"
+    printf '%s\n' "${RED}❌ ファイルの整合性検証に失敗しました。アップデートを中止します。${RESET}"
+    printf '\n'
+    read -r -p "Enterで閉じる..." _
+    exit 1
+  fi
+  printf '%s\n' "${GREEN}✅ 整合性を確認しました（SHA-256）。${RESET}"
 
   # 元ファイルのパーミッションを取得し、新ファイルに引き継ぐ
   # stat が失敗した場合は 755 をデフォルトとする
@@ -239,23 +260,33 @@ _ct_download_replace() {
   # /tmp フォールバック時など異なるファイルシステムでは mv が失敗するため、
   # cp + rm にフォールバックしてクロスデバイスエラーを回避する。
   if ! mv "$_tmp" "$_CT_SCRIPT_PATH" 2>/dev/null; then
-    # クロスデバイス mv 失敗時: 実行中スクリプトへの直接 cp は "Text file busy" になる
-    # 環境があるため、先に rm で既存のエントリ（inode）を解放してから cp する。
-    # これにより、シンボリックリンク経由でのリンク先の意図しない上書きも防止できる。
-    # rm に失敗しても cp を試みる（エラーは cp 側でキャッチ）。
-    # rm 成功後に cp が失敗した場合はダウンロード済みファイルのパスを表示して
-    # ユーザーが手動で回復できるようにする（一時ディレクトリは削除しない）。
-    rm -f "$_CT_SCRIPT_PATH" 2>/dev/null
-    if ! cp "$_tmp" "$_CT_SCRIPT_PATH" 2>/dev/null; then
+    # クロスデバイス mv 失敗時（/tmp フォールバック等で異なるファイルシステムの場合）:
+    # 「コピー先と同一ディレクトリにステージング → アトミックな mv で差し替え」を行う。
+    # rm→cp のように原本を先に削除しないため、途中で失敗しても既存スクリプトは保持される。
+    # mv によるディレクトリエントリの差し替えは実行中スクリプトでも "Text file busy" を
+    # 起こさない（実行中プロセスは旧 inode を保持し続けるため）。
+    # _CT_SCRIPT_PATH は realpath 解決済みのため、ステージングも実体のあるディレクトリに作られ、
+    # シンボリックリンク経由の意図しない上書きも発生しない。
+    local _dest_dir _staging
+    _dest_dir="$(dirname "$_CT_SCRIPT_PATH")"
+    _staging=""
+    if _staging=$(mktemp "${_dest_dir}/.ct-staging.XXXXXX" 2>/dev/null) \
+       && cp "$_tmp" "$_staging" 2>/dev/null \
+       && chmod "$_orig_perms" "$_staging" 2>/dev/null \
+       && mv "$_staging" "$_CT_SCRIPT_PATH" 2>/dev/null; then
+      rm -rf "$_tmpdir"
+    else
+      # 失敗時: ステージングのみ削除し、原本とダウンロード済みファイルは残して
+      # ユーザーが手動で回復できるようにする（一時ディレクトリは削除しない）。
+      [ -n "$_staging" ] && rm -f "$_staging" 2>/dev/null
       printf '%s\n' "${RED}❌ ファイルの書き換えに失敗しました。アップデートを中止します。${RESET}"
       printf '%s\n' "  ・書き込み権限を確認してください。"
-      printf '%s\n' "  ・スクリプトのパス: ${_CT_SCRIPT_PATH}"
+      printf '%s\n' "  ・スクリプトのパス: ${_CT_SCRIPT_PATH}（変更されていません）"
       printf '%s\n' "  ・ダウンロード済みファイル: ${_tmp}（手動でコピーして利用可能）"
       printf '\n'
       read -r -p "Enterで閉じる..." _
       exit 1
     fi
-    rm -rf "$_tmpdir"
   else
     rm -rf "$_tmpdir"
   fi
@@ -346,7 +377,10 @@ _ct_manual_update() {
     local _ct_v
     _ct_v=$(printf '%s' "$_ct_line" | awk '{print $1}')
     local _ct_d
-    _ct_d=$(printf '%s' "$_ct_line" | cut -d' ' -f2-)
+    # 説明文は versions.txt（遠隔取得）由来の自由文字列。端末へ出力する前に
+    # 制御文字（ANSIエスケープ・DEL）を除去してエスケープ注入を防ぐ。
+    # 0x00-0x1F と 0x7F のみ除去するため UTF-8 マルチバイト文字は保持される。
+    _ct_d=$(printf '%s' "$_ct_line" | cut -d' ' -f2- | LC_ALL=C tr -d '\000-\037\177')
     _ct_validate_version "$_ct_v" || continue
     _ct_vers+=("$_ct_v")
     _ct_descs+=("$_ct_d")
