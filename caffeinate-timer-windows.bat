@@ -2,7 +2,7 @@
 setlocal
 "%SystemRoot%\System32\chcp.com" 65001 >nul
 set "__CAFFEINATE_FILE=%~f0"
-"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -ExecutionPolicy Bypass -NoProfile -Command "$t=[IO.File]::ReadAllText($env:__CAFFEINATE_FILE,[Text.Encoding]::UTF8);$si=$t.IndexOf('<#PS');$ei=$t.LastIndexOf('#>PS');if($si -lt 0 -or $ei -le $si){Write-Host 'スクリプトの抽出に失敗しました。';exit 1};& ([scriptblock]::Create($t.Substring($si+4,$ei-$si-4)))"
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -ExecutionPolicy Bypass -NoProfile -Command "$t=[IO.File]::ReadAllText($env:__CAFFEINATE_FILE,[Text.Encoding]::UTF8);$si=$t.IndexOf(('<'+'#PS'));$ei=$t.LastIndexOf(('#'+'>PS'));if($si -lt 0 -or $ei -le $si){Write-Host 'スクリプトの抽出に失敗しました。';exit 1};& ([scriptblock]::Create($t.Substring($si+4,$ei-$si-4)))"
 exit /b
 <#PS
 # Copyright © 2026 Igarin. All rights reserved.
@@ -52,7 +52,7 @@ $RED    = "$E[0;31m"
 $RESET  = "$E[0m"
 
 # ── バージョン定数 ───────────────────────────────────────
-$CURRENT_VERSION = "v1.4.7"
+$CURRENT_VERSION = "v1.4.8"
 
 # ── デスクトップ通知（正常終了時のみ呼び出す）────────────
 # System.Windows.Forms.NotifyIcon によるバルーン通知。
