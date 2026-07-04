@@ -21,7 +21,9 @@ if (platform === 'darwin') {
   args = [script];
 } else if (platform === 'win32') {
   script = path.join(root, 'caffeinate-timer-windows.bat');
-  cmd = process.env.ComSpec || 'cmd.exe';
+  // Absolute path: a bare "cmd.exe" is resolved via the current directory
+  // before PATH on Windows, allowing binary planting from the cwd.
+  cmd = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'cmd.exe');
   // `cmd /c "<path>"` drops the quotes around the path as soon as it contains
   // one of & < > ( ) @ ^ | -- so an install under e.g. "C:\Program Files
   // (x86)\..." fails with "'C:\Program' is not recognized".  /s makes cmd strip
@@ -36,7 +38,7 @@ if (platform === 'darwin') {
 
 // Ensure execute permission on Unix (npm does not always preserve it)
 if (platform !== 'win32' && existsSync(script)) {
-  try { chmodSync(script, 0o755); } catch (_) {}
+  try { chmodSync(script, 0o755); } catch (_) { }
 }
 
 const child = spawn(cmd, args, spawnOpts);
@@ -45,7 +47,7 @@ const child = spawn(cmd, args, spawnOpts);
 // script receives it directly and runs its own trap handler.  Suppress the
 // default Node.js exit here so stdin stays valid while the script finishes
 // its interrupt handling.
-process.on('SIGINT', () => {});
+process.on('SIGINT', () => { });
 
 // Forward SIGTERM to the child so an external kill reaches the script.
 process.on('SIGTERM', () => { child.kill('SIGTERM'); });

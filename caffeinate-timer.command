@@ -52,7 +52,7 @@ _ct_cleanup_caffeinate() {
 }
 
 # ── バージョン・アップデート設定 ─────────────────────────
-CURRENT_VERSION="v1.4.9"
+CURRENT_VERSION="v1.4.10"
 _CT_VERSIONS_URL="https://raw.githubusercontent.com/igarinpiano/caffeinate-timer/main/versions.txt"
 _CT_RELEASES_BASE="https://github.com/igarinpiano/caffeinate-timer/releases/download"
 _CT_SCRIPT_FILENAME="caffeinate-timer.command"
@@ -527,6 +527,8 @@ _ct_parse_adj_secs() {
     [ "${#BASH_REMATCH[1]}" -gt 4 ] && return
     _month_adj=$(( 10#${BASH_REMATCH[1]} )); _a="${BASH_REMATCH[2]}"
   fi
+  # 本体入力と同一の上限: y/mo 抽出後は16文字以内（int64 オーバーフロー防止）
+  [ "${#_a}" -gt 16 ] && return
   if   [[ -z "$_a" ]];                                         then _sec=0
   elif [[ "$_a" =~ ^([0-9]+)d([0-9]+)h([0-9]+)m([0-9]+)s$ ]]; then _sec=$(( 10#${BASH_REMATCH[1]}*86400 + 10#${BASH_REMATCH[2]}*3600 + 10#${BASH_REMATCH[3]}*60 + 10#${BASH_REMATCH[4]} ))
   elif [[ "$_a" =~ ^([0-9]+)d([0-9]+)h([0-9]+)m$ ]];          then _sec=$(( 10#${BASH_REMATCH[1]}*86400 + 10#${BASH_REMATCH[2]}*3600 + 10#${BASH_REMATCH[3]}*60 ))
@@ -535,7 +537,7 @@ _ct_parse_adj_secs() {
   elif [[ "$_a" =~ ^([0-9]+)d([0-9]+)h$ ]];                   then _sec=$(( 10#${BASH_REMATCH[1]}*86400 + 10#${BASH_REMATCH[2]}*3600 ))
   elif [[ "$_a" =~ ^([0-9]+)d([0-9]+)m$ ]];                   then _sec=$(( 10#${BASH_REMATCH[1]}*86400 + 10#${BASH_REMATCH[2]}*60 ))
   elif [[ "$_a" =~ ^([0-9]+)d([0-9]+)s$ ]];                   then _sec=$(( 10#${BASH_REMATCH[1]}*86400 + 10#${BASH_REMATCH[2]} ))
-  elif [[ "$_a" =~ ^([0-9]+)d$ ]];                             then _sec=$(( 10#${BASH_REMATCH[1]}*86400 ))
+  elif [[ "$_a" =~ ^([0-9]+)d$ ]];                             then [ "${#BASH_REMATCH[1]}" -gt 14 ] && return; _sec=$(( 10#${BASH_REMATCH[1]}*86400 ))
   elif [[ "$_a" =~ ^([0-9]+)h([0-9]+)m([0-9]+)s$ ]];          then _sec=$(( 10#${BASH_REMATCH[1]}*3600 + 10#${BASH_REMATCH[2]}*60 + 10#${BASH_REMATCH[3]} ))
   elif [[ "$_a" =~ ^([0-9]+)h([0-9]+)m$ ]];                   then _sec=$(( 10#${BASH_REMATCH[1]}*3600 + 10#${BASH_REMATCH[2]}*60 ))
   elif [[ "$_a" =~ ^([0-9]+)h([0-9]+)s$ ]];                   then _sec=$(( 10#${BASH_REMATCH[1]}*3600 + 10#${BASH_REMATCH[2]} ))

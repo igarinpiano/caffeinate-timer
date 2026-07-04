@@ -84,7 +84,7 @@ $RED    = "$E[0;31m"
 $RESET  = "$E[0m"
 
 # ── バージョン定数 ───────────────────────────────────────
-$CURRENT_VERSION = "v1.4.9"
+$CURRENT_VERSION = "v1.4.10"
 
 # ── スリープ防止の開始 ──────────────────────────────────
 # Add-Type が失敗する環境（言語モード制限など）では [WinPwr] が生成されず、
@@ -154,6 +154,8 @@ function Invoke-CaffeinateAdjust {
         if ($Matches[1].Length -gt 4) { return $null }
         $monthAdj = [long]$Matches[1]; $a = $Matches[2]
     }
+    # 本体入力と同一の上限: y/mo 抽出後は16文字以内（Int64 オーバーフロー防止）
+    if ($a.Length -gt 16) { return $null }
     $sec = 0L
     if      ($a -eq '')                                { $sec = 0L }
     elseif  ($a -match '^(\d+)d(\d+)h(\d+)m(\d+)s$') { $sec = [long]$Matches[1]*86400L + [long]$Matches[2]*3600L + [long]$Matches[3]*60L + [long]$Matches[4] }
@@ -163,7 +165,7 @@ function Invoke-CaffeinateAdjust {
     elseif  ($a -match '^(\d+)d(\d+)h$')              { $sec = [long]$Matches[1]*86400L + [long]$Matches[2]*3600L }
     elseif  ($a -match '^(\d+)d(\d+)m$')              { $sec = [long]$Matches[1]*86400L + [long]$Matches[2]*60L }
     elseif  ($a -match '^(\d+)d(\d+)s$')              { $sec = [long]$Matches[1]*86400L + [long]$Matches[2] }
-    elseif  ($a -match '^(\d+)d$')                    { $sec = [long]$Matches[1]*86400L }
+    elseif  ($a -match '^(\d+)d$')                    { if ($Matches[1].Length -gt 14) { return $null }; $sec = [long]$Matches[1]*86400L }
     elseif  ($a -match '^(\d+)h(\d+)m(\d+)s$')       { $sec = [long]$Matches[1]*3600L + [long]$Matches[2]*60L + [long]$Matches[3] }
     elseif  ($a -match '^(\d+)h(\d+)m$')              { $sec = [long]$Matches[1]*3600L + [long]$Matches[2]*60L }
     elseif  ($a -match '^(\d+)h(\d+)s$')              { $sec = [long]$Matches[1]*3600L + [long]$Matches[2] }
