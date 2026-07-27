@@ -1,9 +1,33 @@
 @echo off
 setlocal
-"%SystemRoot%\System32\chcp.com" 65001 >nul
+rem ---------------------------------------------------------------------------
+rem  Polyglot launcher.  The PowerShell body is embedded further down, between
+rem  the two block-comment markers, and is extracted at run time.
+rem
+rem  This header MUST stay pure ASCII.  cmd.exe reads a batch file line by
+rem  line using the code page that is active at that moment, so multi-byte
+rem  text placed after the chcp call below can be decoded incorrectly.
+rem ---------------------------------------------------------------------------
+
+rem -- Remember the console code page so it can be restored on exit.
+rem    chcp's message is localized, but every locale prints the number after a
+rem    colon; strip spaces and a trailing period (de-DE prints "850.").
+set "__CAFFEINATE_CP="
+for /f "tokens=2 delims=:" %%A in ('%SystemRoot%\System32\chcp.com 2^>nul') do set "__CAFFEINATE_CP=%%A"
+set "__CAFFEINATE_CP=%__CAFFEINATE_CP: =%"
+set "__CAFFEINATE_CP=%__CAFFEINATE_CP:.=%"
+
+rem -- UTF-8, so PowerShell renders the Japanese UI instead of mojibake.
+"%SystemRoot%\System32\chcp.com" 65001 >nul 2>nul
+
 set "__CAFFEINATE_FILE=%~f0"
-"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -ExecutionPolicy Bypass -NoProfile -Command "$t=[IO.File]::ReadAllText($env:__CAFFEINATE_FILE,[Text.Encoding]::UTF8);$si=$t.IndexOf(('<'+'#PS'));$ei=$t.LastIndexOf(('#'+'>PS'));if($si -lt 0 -or $ei -le $si){Write-Host 'スクリプトの抽出に失敗しました。';exit 1};& ([scriptblock]::Create($t.Substring($si+4,$ei-$si-4)))"
-exit /b
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -ExecutionPolicy Bypass -NoProfile -Command "$t=[IO.File]::ReadAllText($env:__CAFFEINATE_FILE,[Text.Encoding]::UTF8);$si=$t.IndexOf(('<'+'#PS'));$ei=$t.LastIndexOf(('#'+'>PS'));if($si -lt 0 -or $ei -le $si){Write-Host 'Failed to locate the embedded script. Please re-download caffeinate-timer-windows.bat.';Read-Host 'Press Enter to close';exit 1};try{$sb=[scriptblock]::Create($t.Substring($si+4,$ei-$si-4))}catch{Write-Host ('Failed to load the embedded script: '+$_.Exception.Message);Read-Host 'Press Enter to close';exit 1};& $sb"
+set "__CAFFEINATE_EXIT=%ERRORLEVEL%"
+
+rem -- Restore the code page.  Leaving the console on 65001 breaks unrelated
+rem    commands the user runs afterwards in the same window.
+if not "%__CAFFEINATE_CP%"=="" "%SystemRoot%\System32\chcp.com" %__CAFFEINATE_CP% >nul 2>nul
+exit /b %__CAFFEINATE_EXIT%
 <#PS
 # Copyright © 2026 Igarin. All rights reserved.
 # ── Windows 用 Caffeinate タイマー ──────────────────────
@@ -22,9 +46,17 @@ public static class WinCon {
 }
 '@ -ErrorAction SilentlyContinue
     }
-    $hOut = [WinCon]::GetStdHandle(-11); $cmode = 0u
-    [WinCon]::GetConsoleMode($hOut, [ref]$cmode) | Out-Null
-    [WinCon]::SetConsoleMode($hOut, $cmode -bor 4u) | Out-Null
+    # 数値リテラルの u（unsigned）接尾辞は PowerShell 6.2 以降の構文。
+    # 本スクリプトは Windows PowerShell 5.1 上で実行されるため、"0u" は
+    # スクリプトブロック全体のパースエラーになり、1行も実行されなくなる。
+    # パース時のエラーなので try/catch でも捕捉できない。明示キャストを使う。
+    $hOut  = [WinCon]::GetStdHandle(-11)
+    $cmode = [uint32]0
+    if ([WinCon]::GetConsoleMode($hOut, [ref]$cmode)) {
+        # ENABLE_VIRTUAL_TERMINAL_PROCESSING(0x4) は
+        # ENABLE_PROCESSED_OUTPUT(0x1) と併用しないと拒否される。
+        [WinCon]::SetConsoleMode($hOut, [uint32]($cmode -bor 0x5)) | Out-Null
+    }
 } catch {}
 
 # ── スリープ防止 API（kernel32.dll / 標準搭載）────────
@@ -35,7 +67,7 @@ try {
 using System.Runtime.InteropServices;
 public static class WinPwr {
     [DllImport("kernel32.dll")] public static extern uint SetThreadExecutionState(uint f);
-    public static void Prevent() { SetThreadExecutionState(0x80000003u); }
+    public static bool Prevent() { return SetThreadExecutionState(0x80000003u) != 0; }
     public static void Allow()   { SetThreadExecutionState(0x80000000u); }
 }
 '@ -ErrorAction SilentlyContinue
@@ -52,7 +84,22 @@ $RED    = "$E[0;31m"
 $RESET  = "$E[0m"
 
 # ── バージョン定数 ───────────────────────────────────────
-$CURRENT_VERSION = "v1.4.8"
+$CURRENT_VERSION = "v1.4.9"
+
+# ── スリープ防止の開始 ──────────────────────────────────
+# Add-Type が失敗する環境（言語モード制限など）では [WinPwr] が生成されず、
+# SetThreadExecutionState が 0 を返した場合も防止は効いていない。従来はどちらも
+# catch で握り潰していたため、「スリープを防止しています」と表示しながら実際には
+# 何もしていない状態になり得た。失敗を検知して明示的に警告する。
+function Start-CaffeinateSleepBlock {
+    $ok = $false
+    try { $ok = [WinPwr]::Prevent() } catch {}
+    if (-not $ok) {
+        Write-Host "${YELLOW}⚠️  スリープ防止を有効にできませんでした。${RESET}"
+        Write-Host "${YELLOW}    タイマーは動作しますが、スリープは防止されません。${RESET}"
+        Write-Host ""
+    }
+}
 
 # ── デスクトップ通知（正常終了時のみ呼び出す）────────────
 # System.Windows.Forms.NotifyIcon によるバルーン通知。
@@ -259,7 +306,7 @@ function Start-WaitMode {
     Write-Host "${YELLOW}💡 スリープを防止しています... (Ctrl+C で中断)${RESET}"
     Write-Host ""
 
-    try { [WinPwr]::Prevent() } catch {}
+    Start-CaffeinateSleepBlock
     try { [Console]::TreatControlCAsInput = $true } catch {}
 
     $wStart      = Get-Date
@@ -759,7 +806,7 @@ Write-Host "  ${CYAN}ℹ️  実行中に +30m / -1h などを入力して Enter
 Write-Host ""
 
 # ── スリープ防止 開始 ────────────────────────────────────
-try { [WinPwr]::Prevent() } catch {}
+Start-CaffeinateSleepBlock
 
 # ── Ctrl+C をキー入力として受け取り、ループで待機 ────────
 # [Console]::TreatControlCAsInput = $true にすることで

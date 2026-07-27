@@ -9,6 +9,7 @@ const root = path.join(__dirname, '..');
 const platform = process.platform;
 
 let cmd, args, script;
+const spawnOpts = { stdio: 'inherit' };
 
 if (platform === 'darwin') {
   script = path.join(root, 'caffeinate-timer.command');
@@ -20,8 +21,14 @@ if (platform === 'darwin') {
   args = [script];
 } else if (platform === 'win32') {
   script = path.join(root, 'caffeinate-timer-windows.bat');
-  cmd = 'cmd.exe';
-  args = ['/c', script];
+  cmd = process.env.ComSpec || 'cmd.exe';
+  // `cmd /c "<path>"` drops the quotes around the path as soon as it contains
+  // one of & < > ( ) @ ^ | -- so an install under e.g. "C:\Program Files
+  // (x86)\..." fails with "'C:\Program' is not recognized".  /s makes cmd strip
+  // exactly one outer quote pair, so double-quoting the path keeps it intact.
+  // /d skips any AutoRun command the machine has configured.
+  args = ['/d', '/s', '/c', '""' + script + '""'];
+  spawnOpts.windowsVerbatimArguments = true;
 } else {
   process.stderr.write('Unsupported platform: ' + platform + '\n');
   process.exit(1);
@@ -32,7 +39,7 @@ if (platform !== 'win32' && existsSync(script)) {
   try { chmodSync(script, 0o755); } catch (_) {}
 }
 
-const child = spawn(cmd, args, { stdio: 'inherit' });
+const child = spawn(cmd, args, spawnOpts);
 
 // Ctrl+C (SIGINT) is delivered to the entire process group, so the shell
 // script receives it directly and runs its own trap handler.  Suppress the
