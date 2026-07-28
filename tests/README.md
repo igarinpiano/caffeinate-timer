@@ -59,6 +59,11 @@ SIGPIPE で対象スクリプトも止まります（1 件あたり 0.1 秒程�
 プロセスは生まれず、残留もしません。節ごとの経過時間も出力するので、遅い環境でも
 どこで時間がかかっているか分かります。
 
+唯一 `/bg` のケースだけは待機プロセスが残ります。`/bg` は `Start-Process` で
+切り離した PowerShell を起こすため、`cmd` を `taskkill` しても届きません。
+放っておくと `/bg 90`（5400秒）が実機のスリープと画面消灯を90分止め続けるので、
+起動前後の `powershell.exe` を比べて増えた分を落とします。
+
 ## このテストが検出する既知の退行
 
 いずれも実際に発生した不具合です。
@@ -78,6 +83,8 @@ SIGPIPE で対象スクリプトも止まります（1 件あたり 0.1 秒程�
 | macOS 上の `universal.sh`（BSD `date -v` 経路）だけが壊れる | `test_limits.sh` / `test_duration.sh`（macOS ジョブ） |
 | `timeout` や GNU sed 拡張に依存してテスト自体が macOS で動かない | `test_selfcheck.sh` |
 | Windows のテストが遅すぎてジョブの時間上限で打ち切られる | `test_windows_exec.ps1`（節ごとの経過時間を出力） |
+| `chcp` が効かず CP932 で書かれると `❌` が `?` に落ち、拒否ケースが全滅する | `test_windows_exec.ps1`（CP932 のエラー本文を取り出せること） |
+| `/bg` が起こした待機プロセスが残り、実機のスリープを90分止める | `test_windows_exec.ps1`（増えた `powershell.exe` を後始末） |
 | 変数の直後の全角文字で bash 3.2 が異常終了する | `test_selfcheck.sh` |
 | 出力が空でも通ってしまう検査（空振り） | `test_duration.sh`（出力が空でないことを併せて検査） |
 | `cmd.exe` を裸の名前で spawn する（カレントディレクトリから乗っ取られる） | `test_launcher.sh` |
