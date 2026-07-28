@@ -54,6 +54,9 @@ SIGPIPE で対象スクリプトも止まります（1 件あたり 0.1 秒程�
 | `.bat` に PowerShell 6.2 以降専用の数値リテラル（`0u`）が入る（5.1 で全体がパースエラー） | `test_windows.sh` |
 | `.bat` のヘッダー行に抽出マーカーの文字列が露出する（開始位置を誤検出する） | `test_windows.sh` |
 | `.bat` が LF で保存される / ヘッダーに非 ASCII が混入する | `test_windows.sh` |
+| 上限内の冗長な表記（`1years2months3days…` など40文字）を誤って弾く | `test_limits.sh` / `test_windows_exec.ps1` |
+| macOS 上の `universal.sh`（BSD `date -v` 経路）だけが壊れる | `test_limits.sh` / `test_duration.sh`（macOS ジョブ） |
+| `timeout` や GNU sed 拡張に依存してテスト自体が macOS で動かない | CI の macOS ジョブ |
 | `cmd.exe` を裸の名前で spawn する（カレントディレクトリから乗っ取られる） | `test_launcher.sh` |
 | `cmd /c` の引用が外れる（`C:\Program Files (x86)\...` で起動できない） | `test_launcher.sh` |
 | 時間調整の桁数上限が無く int64 が桁あふれする | `test_duration.sh` / `test_adjust.sh` |

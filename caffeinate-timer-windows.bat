@@ -86,6 +86,13 @@ $RESET  = "$E[0m"
 # ── バージョン定数 ───────────────────────────────────────
 $CURRENT_VERSION = "v1.4.10"
 
+# ── 画面クリア ──────────────────────────────────────────
+# 出力をリダイレクトした場合やコンソールを持たない環境では Clear-Host が
+# 例外になる。画面クリアは見た目だけの処理なので、失敗しても続行する。
+function Clear-CaffeinateScreen {
+    try { Clear-Host } catch { }
+}
+
 # ── スリープ防止の開始 ──────────────────────────────────
 # Add-Type が失敗する環境（言語モード制限など）では [WinPwr] が生成されず、
 # SetThreadExecutionState が 0 を返した場合も防止は効いていない。従来はどちらも
@@ -378,7 +385,7 @@ function Start-WaitMode {
 #   環境依存の問題（ExecutionPolicy / Defender 等）が多く
 #   堅牢な実装が困難なため）
 function Show-SettingsMenu {
-    Clear-Host
+    Clear-CaffeinateScreen
     Write-Host "${BOLD}${CYAN}⚙️  設定${RESET}"
     Write-Host "${CYAN}────────────────────────────────────────${RESET}"
     Write-Host ""
@@ -400,7 +407,7 @@ function Show-SettingsMenu {
 }
 
 # ── ヘッダー ────────────────────────────────────────────
-Clear-Host
+Clear-CaffeinateScreen
 Write-Host "${BOLD}${CYAN}☕  Caffeinate タイマー${RESET}"
 Write-Host "${CYAN}────────────────────────────────────────${RESET}"
 Write-Host ""

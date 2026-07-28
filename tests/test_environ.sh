@@ -9,10 +9,7 @@ source "$(dirname "$0")/lib.sh"
 
 cd "$CT_ROOT"
 
-case "$(uname -s)" in
-  Darwin) SCRIPT=caffeinate-timer.command ;;
-  *)      SCRIPT=caffeinate-timer-universal.sh ;;
-esac
+SCRIPT="$CT_SCRIPT"
 
 section "タイムゾーンを変えても年/月が計算できる"
 for tz in UTC Asia/Tokyo America/New_York America/Sao_Paulo Australia/Lord_Howe Pacific/Kiritimati Etc/GMT+12; do
@@ -26,7 +23,7 @@ section "DST 境界を跨ぐ往復計算"
 # エポック秒 → ローカル時刻 → 相対加算 → エポック秒 の往復が、
 # 時刻が重複・欠落する瞬間でも破綻しないことを確認する。
 # （実行時刻を偽装できないため、日時計算の形だけを直接検証する）
-if [ "$SCRIPT" = caffeinate-timer-universal.sh ] && [ "$(uname -s)" != Darwin ]; then
+if [ "$CT_OS" = linux ]; then
   roundtrip() { # tz epoch years months -> 秒数 or 空
     local tz="$1" e="$2" y="$3" m="$4" base rel="" out
     base=$(TZ="$tz" date -d "@$e" '+%Y-%m-%d %H:%M:%S') || return 1
