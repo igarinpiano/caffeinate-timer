@@ -6,12 +6,29 @@ on:
   pull_request:
   workflow_dispatch:
 
+# 同じブランチへ連続で push した場合は古い実行を打ち切る
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test:
+  # ── macOS / Linux ───────────────────────────────────────────────────────
+  # .command（macOS）と universal.sh（macOS / Linux）を実際に動かす。
+  unix:
+    name: ${{ matrix.label }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        include:
+          # Linux x64 / ARM64
+          - { os: ubuntu-24.04,       label: 'Linux x64 (24.04)' }
+          - { os: ubuntu-24.04-arm,   label: 'Linux ARM64 (24.04)' }
+          - { os: ubuntu-22.04,       label: 'Linux x64 (22.04)' }
+          # macOS ARM64 / Intel。Intel は latest ではなく macOS 26 に固定する。
+          - { os: macos-26,           label: 'macOS 26 ARM64' }
+          - { os: macos-26-intel,     label: 'macOS 26 Intel' }
+          - { os: macos-15,           label: 'macOS 15 ARM64' }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -20,18 +37,86 @@ jobs:
         with:
           node-version: '24'
 
-      # pwsh は windows/macos ランナーには標準で入っている。
-      # ubuntu では無いので入れておく（無くても該当テストがスキップされるだけ）。
-      - name: Install PowerShell (ubuntu)
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          sudo snap install powershell --classic || echo "pwsh unavailable; those checks will skip"
+      # PowerShell があれば .bat の埋め込みスクリプトを実際にパースして検証する。
+      # 無い場合はその項目だけスキップされるので、失敗しても続行する。
+      - name: Install PowerShell (Linux)
+        if: runner.os == 'Linux'
+        continue-on-error: true
+        run: sudo snap install powershell --classic
 
-      - name: Install extra locales (ubuntu)
-        if: matrix.os == 'ubuntu-latest'
+      - name: Install extra locales (Linux)
+        if: runner.os == 'Linux'
+        continue-on-error: true
         run: |
-          sudo locale-gen en_US.UTF-8 ja_JP.UTF-8 de_DE.UTF-8 || true
-          sudo update-locale || true
+          sudo locale-gen en_US.UTF-8 ja_JP.UTF-8 de_DE.UTF-8
+          sudo update-locale
+
+      - name: Show environment
+        run: |
+          uname -a
+          bash --version | head -1
+          node --version
+          python3 --version
+          command -v pwsh >/dev/null && pwsh --version || echo "pwsh: (none)"
 
       - name: Run tests
         run: tests/run.sh
+
+  # ── Windows ─────────────────────────────────────────────────────────────
+  # 静的検査（run.sh / Git Bash）と、.bat を実際に起動する実行テスト。
+  windows:
+    name: ${{ matrix.label }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-2025,   label: 'Windows 2025 x64' }
+          - { os: windows-2022,   label: 'Windows 2022 x64' }
+          - { os: windows-11-arm, label: 'Windows 11 ARM64' }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+
+      - name: Show environment
+        shell: pwsh
+        run: |
+          $PSVersionTable | Format-List
+          [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+          node --version
+          & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+
+      # Git Bash で静的検査を回す（改行・マーカー・PowerShell 5.1 互換性・
+      # ランチャーの分岐・バージョン整合・テスト自身の移植性）。
+      # selfcheck はここでも回す: Windows には pwsh があるので
+      # test_windows_exec.ps1 のパース検査が実際に走る。
+      - name: Static checks (Git Bash)
+        shell: bash
+        run: |
+          tests/run.sh selfcheck
+          tests/run.sh windows
+          tests/run.sh launcher
+          tests/run.sh version
+
+      # .bat を実際に起動して、解析結果とカウントダウンを確認する。
+      - name: Run .bat for real
+        shell: pwsh
+        run: tests/test_windows_exec.ps1
+
+  # ── すべての結果をまとめる ──────────────────────────────────────────────
+  # 必須チェックを1つにしたい場合はこのジョブを指定する。
+  result:
+    if: always()
+    needs: [unix, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check results
+        run: |
+          echo "unix:    ${{ needs.unix.result }}"
+          echo "windows: ${{ needs.windows.result }}"
+          [ "${{ needs.unix.result }}" = "success" ] || exit 1
+          [ "${{ needs.windows.result }}" = "success" ] || exit 1
