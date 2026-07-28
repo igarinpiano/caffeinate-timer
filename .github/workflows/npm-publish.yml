@@ -36,13 +36,27 @@ jobs:
           else
             VERSION="$RELEASE_TAG"
           fi
-          if ! printf '%s' "$VERSION" | grep -Eq '^v?[0-9]+\.[0-9]+\.[0-9]+$'; then
+          # Accept the suffixed hotfix form (v1.4.1a) that the shell scripts'
+          # _ct_validate_version and the README both allow.
+          if ! printf '%s' "$VERSION" | grep -Eq '^v?[0-9]+\.[0-9]+\.[0-9]+[a-z]?$'; then
             echo "Invalid version: $VERSION" >&2
             exit 1
           fi
+          # A suffixed hotfix is not valid semver: npm silently rewrites 1.4.1a
+          # to the prerelease 1.4.1-a, which sorts *below* 1.4.1 and would make
+          # `npm install caffeinate-timer` resolve to a lower version than the
+          # release it fixes.  Publish only plain X.Y.Z; suffixed hotfixes are
+          # distributed via the GitHub release and /update instead.
+          if printf '%s' "$VERSION" | grep -Eq '[a-z]$'; then
+            echo "PUBLISH_TO_NPM=false" >> "$GITHUB_ENV"
+            echo "Suffixed hotfix $VERSION — skipping npm publish (GitHub release only)."
+            exit 0
+          fi
+          echo "PUBLISH_TO_NPM=true" >> "$GITHUB_ENV"
           npm pkg set version="${VERSION#v}"
 
       - name: Publish to npm
+        if: env.PUBLISH_TO_NPM == 'true'
         run: |
           # setup-node sets NODE_AUTH_TOKEN to GITHUB_TOKEN via GITHUB_ENV,
           # which step-level env: cannot override. Unset at shell level so npm
