@@ -90,6 +90,44 @@ if [ -f ./test_windows_exec.ps1 ]; then
   else
     skip "test_windows_exec.ps1 のパース" "pwsh が無い"
   fi
+
+  # PowerShell の変数名は大文字小文字を区別せず、スクリプト本体の代入は
+  # $script: と同じスコープに入る。つまり本体で $p = ... と書くと集計用の
+  # $script:P を壊す。実際に $p = Invoke-Target ... で集計が
+  # PSCustomObject になり、$script:P++ が実行時エラーになった。
+  # 集計用の変数と衝突する短い名前への代入を禁止する。
+  hit=$(python3 - <<'PY'
+import io, re
+
+# 集計用に使っている script スコープの変数を拾う
+lines = io.open('test_windows_exec.ps1', encoding='utf-8').readlines()
+counters = set(m.lower() for m in re.findall(r'\$script:([A-Za-z_][A-Za-z0-9_]*)', ''.join(lines)))
+
+# 関数の中はローカルスコープなので衝突しない。波括弧の深さを数えて、
+# トップレベルの function ブロックの内側を除外する。
+out, depth, in_fn = [], 0, False
+for i, raw in enumerate(lines, 1):
+    code = re.sub(r'#.*$', '', raw)
+    stripped = code.strip()
+    opens_fn = depth == 0 and re.match(r'function\s', stripped) is not None
+
+    if not in_fn and not opens_fn and not stripped.startswith('$script:'):
+        for m in re.finditer(r'\$([A-Za-z_][A-Za-z0-9_]*)\s*=(?!=)', code):
+            if m.group(1).lower() in counters:
+                out.append('%d: $%s への代入が $script:%s と衝突' % (i, m.group(1), m.group(1)))
+        for m in re.finditer(r'foreach\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s+in', code):
+            if m.group(1).lower() in counters:
+                out.append('%d: foreach の $%s が $script:%s と衝突' % (i, m.group(1), m.group(1)))
+
+    if opens_fn:
+        in_fn = True
+    depth += code.count('{') - code.count('}')
+    if in_fn and depth <= 0:
+        in_fn, depth = False, 0
+print('\n'.join(out))
+PY
+)
+  assert_eq "" "$hit" "集計用の \$script: 変数と衝突する代入が無い"
 else
   fail "test_windows_exec.ps1 が存在する"
 fi

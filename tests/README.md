@@ -47,6 +47,18 @@ SIGPIPE で対象スクリプトも止まります（1 件あたり 0.1 秒程�
 実際にパースします。`bin/caffeinate-timer.js` は `process.platform` と
 `spawn` を差し替えて引数だけを取り出します（`tests/fixtures/launcher-probe.js`）。
 
+**Windows 実機では `.bat` を起動して確認します。** 出力を一時ファイルへ流し、
+継続時間かエラーの行が出た時点で `taskkill` でプロセスツリーを落とします
+（bash 側の `duration()` と同じ考え方）。実際のカウントダウンは 2 秒の指定で
+1度だけ完走させ、`/bg` も専用のケースで1度だけ確認します。
+
+以前は受理される入力ごとに `/bg` を使っていましたが、`/bg` は指定時間だけ待機する
+バックグラウンドの PowerShell を起こすため、100件規模だと待機プロセスが数十個残り、
+それぞれが `Add-Type` で C# をコンパイルして CPU を奪い合います。結果として Windows
+ジョブが25分の上限に達して打ち切られました。マーカー検出で即 kill する方式なら子
+プロセスは生まれず、残留もしません。節ごとの経過時間も出力するので、遅い環境でも
+どこで時間がかかっているか分かります。
+
 ## このテストが検出する既知の退行
 
 いずれも実際に発生した不具合です。
@@ -65,6 +77,7 @@ SIGPIPE で対象スクリプトも止まります（1 件あたり 0.1 秒程�
 | 符号（`+` `-` `＋` `－`）を本体入力でも受理してしまう | `test_fullwidth.sh` / `test_windows_exec.ps1` |
 | macOS 上の `universal.sh`（BSD `date -v` 経路）だけが壊れる | `test_limits.sh` / `test_duration.sh`（macOS ジョブ） |
 | `timeout` や GNU sed 拡張に依存してテスト自体が macOS で動かない | `test_selfcheck.sh` |
+| Windows のテストが遅すぎてジョブの時間上限で打ち切られる | `test_windows_exec.ps1`（節ごとの経過時間を出力） |
 | 変数の直後の全角文字で bash 3.2 が異常終了する | `test_selfcheck.sh` |
 | 出力が空でも通ってしまう検査（空振り） | `test_duration.sh`（出力が空でないことを併せて検査） |
 | `cmd.exe` を裸の名前で spawn する（カレントディレクトリから乗っ取られる） | `test_launcher.sh` |
