@@ -33,7 +33,7 @@ $Bat        = Join-Path $Root 'caffeinate-timer-windows.bat'
 $LauncherJs = Join-Path $Root 'bin/caffeinate-timer.js'
 $CmdExe     = Join-Path $env:SystemRoot 'System32\cmd.exe'
 
-$script:P = 0; $script:F = 0; $script:S = 0
+$script:Passed = 0; $script:Failed = 0; $script:Skipped = 0
 $script:StartedPids = @()
 $script:Sw = [System.Diagnostics.Stopwatch]::StartNew()
 $script:SectionAt = 0.0
@@ -79,20 +79,20 @@ function Section([string]$t) {
   Write-Host $t
   Assert-Budget
 }
-function Pass([string]$t) { $script:P++; Write-Host "  [ OK ] $t" -ForegroundColor Green }
+function Pass([string]$t) { $script:Passed++; Write-Host "  [ OK ] $t" -ForegroundColor Green }
 function Fail([string]$t, [string]$d = '') {
-  $script:F++
+  $script:Failed++
   Write-Host "  [ NG ] $t" -ForegroundColor Red
   if ($d) { foreach ($l in ($d -split "`r?`n")) { Write-Host "         $l" -ForegroundColor DarkGray } }
 }
-function Skip([string]$t, [string]$r) { $script:S++; Write-Host "  [ -- ] $t ($r)" -ForegroundColor Yellow }
+function Skip([string]$t, [string]$r) { $script:Skipped++; Write-Host "  [ -- ] $t ($r)" -ForegroundColor Yellow }
 
 function Write-Summary {
   Write-Host ''
   Write-Host '────────────────────────────────────────'
-  $summary = "$($script:P) passed"
-  if ($script:F -gt 0) { $summary += " / $($script:F) failed" }
-  if ($script:S -gt 0) { $summary += " / $($script:S) skipped" }
+  $summary = "$($script:Passed) passed"
+  if ($script:Failed -gt 0) { $summary += " / $($script:Failed) failed" }
+  if ($script:Skipped -gt 0) { $summary += " / $($script:Skipped) skipped" }
   Write-Host ('{0}   (合計 {1:N1}s)' -f $summary, $script:Sw.Elapsed.TotalSeconds)
 }
 
@@ -354,17 +354,17 @@ $chosen  = $null
 $attempts = @()
 foreach ($alloc in @($false, $true)) {
   $label = if ($alloc) { 'コンソールあり' } else { 'コンソールなし' }
-  $sw    = [System.Diagnostics.Stopwatch]::StartNew()
-  $p     = Invoke-Target -InputText '1:30' -AllocConsole $alloc
-  $sw.Stop()
-  if ((Get-Seconds $p.Text) -eq '90') {
+  $caseSw = [System.Diagnostics.Stopwatch]::StartNew()
+  $probe  = Invoke-Target -InputText '1:30' -AllocConsole $alloc
+  $caseSw.Stop()
+  if ((Get-Seconds $probe.Text) -eq '90') {
     $chosen = $alloc
-    $per    = $sw.Elapsed.TotalSeconds
+    $per    = $caseSw.Elapsed.TotalSeconds
     Pass ('{0}: 1件 {1:N1}s で継続時間を検出できる' -f $label, $per)
     break
   }
-  Write-Host ('    {0}: 検出できず ({1:N1}s)' -f $label, $sw.Elapsed.TotalSeconds) -ForegroundColor Yellow
-  $attempts += ("── {0} ──`n{1}" -f $label, (Format-CaptureDiagnostics $p.Bytes))
+  Write-Host ('    {0}: 検出できず ({1:N1}s)' -f $label, $caseSw.Elapsed.TotalSeconds) -ForegroundColor Yellow
+  $attempts += ("── {0} ──`n{1}" -f $label, (Format-CaptureDiagnostics $probe.Bytes))
 }
 if ($null -eq $chosen) {
   Fail '継続時間の行を検出できる' ((@(
@@ -462,11 +462,11 @@ foreach ($v in @('+90', '-5', '＋90', '－5', '−5', 'ー5', '+1h', '＋１ｈ
 
 Section '極端に長い入力'
 $long = '9' * 10000
-$sw = [System.Diagnostics.Stopwatch]::StartNew()
+$caseSw = [System.Diagnostics.Stopwatch]::StartNew()
 $r = Parse-Err $long
-$sw.Stop()
+$caseSw.Stop()
 if ($r.TimedOut) { Fail '10000桁の入力が拒否される' 'タイムアウトした' }
-elseif ($r.Msg -like '*長すぎ*') { Pass ('10000桁の入力が拒否される ({0:N1}s)' -f $sw.Elapsed.TotalSeconds) }
+elseif ($r.Msg -like '*長すぎ*') { Pass ('10000桁の入力が拒否される ({0:N1}s)' -f $caseSw.Elapsed.TotalSeconds) }
 else { Fail '10000桁の入力が拒否される' ("メッセージ: '" + $r.Msg + "'") }
 
 Section '入力はコマンドとして評価されない'
@@ -557,11 +557,11 @@ AssertMatch '現在のバージョン' $r.Text '/settings が設定画面を表�
 # ── 後始末 ──────────────────────────────────────────────────────────────
 Section '後始末'
 Remove-Item $odd -Recurse -Force -ErrorAction SilentlyContinue
-foreach ($p in $script:StartedPids) {
-  try { & taskkill.exe /T /F /PID $p 2>&1 | Out-Null } catch { }
+foreach ($stray in $script:StartedPids) {
+  try { & taskkill.exe /T /F /PID $stray 2>&1 | Out-Null } catch { }
 }
 Pass '一時ファイルと残留プロセスを片付けた'
 
 Write-Summary
-if ($script:F -gt 0) { exit 1 }
+if ($script:Failed -gt 0) { exit 1 }
 exit 0
