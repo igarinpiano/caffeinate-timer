@@ -62,6 +62,13 @@ $script:TextMarker = '継続時間|時間を入力'
 # 上限より手前で自分から打ち切り、そこまでの結果を必ず出力する。
 $script:BudgetSec = 900
 
+# 子プロセスにコンソールを割り当てるか。割り当てると .bat の chcp 65001 が
+# 効く一方、PowerShell の Read-Host が新しいコンソールの入力を見てしまい、
+# リダイレクトした標準入力が届かなくなることがある（届かないと空入力として
+# 扱われ、入力画面を描き直す無限ループになる）。どちらが正しいかは環境依存
+# なので、事前確認で実際に両方試して決める。
+$script:AllocConsole = $false
+
 function Section([string]$t) {
   $now = $script:Sw.Elapsed.TotalSeconds
   if ($script:SectionAt -gt 0) {
@@ -139,16 +146,27 @@ function ConvertFrom-CaptureBytes([byte[]]$bytes) {
 # マーカーを検出できなかったときに原因を切り分けるための生データ
 function Format-CaptureDiagnostics([byte[]]$bytes) {
   if (-not $bytes -or $bytes.Length -eq 0) { return '(出力が空)' }
-  $n     = [Math]::Min(200, $bytes.Length)
+  $n     = [Math]::Min(120, $bytes.Length)
   $hex   = (($bytes[0..($n - 1)] | ForEach-Object { $_.ToString('x2') }) -join ' ')
   $lines = @(("バイト数: {0}" -f $bytes.Length), ("先頭 {0}B: {1}" -f $n, $hex))
+
+  # 各候補のデコード結果を短く並べ、どのコードページで書かれたかを見分ける
   foreach ($enc in $script:Encodings) {
     $t = ''
     try { $t = $enc.GetString($bytes) } catch { continue }
     $t = ($t -replace "`r?`n", ' / ')
-    if ($t.Length -gt 300) { $t = $t.Substring(0, 300) + '…' }
+    if ($t.Length -gt 120) { $t = $t.Substring(0, 120) + '…' }
     $lines += ("{0}: {1}" -f $enc.WebName, $t)
   }
+
+  # 採用したデコード結果は長めに出す。入力画面が何度も描き直されていれば
+  # 標準入力が届いていない（空入力として扱われている）ことが分かる。
+  $body = ConvertFrom-CaptureBytes $bytes
+  $lines += ("入力画面の出現回数: {0}" -f ([regex]::Matches($body, '時間を入力してください')).Count)
+  $lines += ("エラー行の出現回数: {0}" -f ([regex]::Matches($body, "❌|$([char]27)\[0;31m")).Count)
+  $flat = ($body -replace "`r?`n", ' / ')
+  if ($flat.Length -gt 1800) { $flat = $flat.Substring(0, 1800) + '…' }
+  $lines += ('本文: ' + $flat)
   return ($lines -join "`n")
 }
 
@@ -162,10 +180,12 @@ function Invoke-Target {
     [int]    $TimeoutSec = 25,
     [string] $WorkingDirectory = $Root,
     [string] $UntilPattern = '',    # この正規表現が出た時点で打ち切る
+    [object] $AllocConsole = $null, # 既定は $script:AllocConsole（事前確認で決める）
     [switch] $WaitForExit           # プロセスの終了そのものを見たいときだけ使う
   )
   if (-not $Command)      { $Command = '"{0}"' -f $Bat }
   if (-not $UntilPattern) { $UntilPattern = $script:Marker }
+  if ($null -eq $AllocConsole) { $AllocConsole = $script:AllocConsole }
   $out = Join-Path ([IO.Path]::GetTempPath()) ('ct-' + [guid]::NewGuid().ToString('N') + '.log')
   # /s は remainder の最初と最後の引用符だけを外すので、内側の引用は残る
   $arguments = '/d /s /c "{0} > "{1}" 2>&1"' -f $Command, $out
@@ -175,9 +195,7 @@ function Invoke-Target {
   $psi.Arguments             = $arguments
   $psi.WorkingDirectory      = $WorkingDirectory
   $psi.UseShellExecute       = $false
-  # コンソールを与える。CreateNoWindow だと .bat の chcp 65001 が効かず、
-  # 日本語の出力が ANSI/OEM で書かれてマーカーに一致しなくなる。
-  $psi.CreateNoWindow        = $false
+  $psi.CreateNoWindow        = -not [bool]$AllocConsole
   $psi.RedirectStandardInput = $true
 
   $proc = [System.Diagnostics.Process]::Start($psi)
@@ -327,22 +345,36 @@ AssertNotMatch 'ParserError|UnexpectedToken|not recognized' $boot.Text 'パー�
 # マーカーを検出できないと、以降の全ケースが「出力を待ち続けて
 # タイムアウト」になり、ジョブ全体が上限で打ち切られてログも残らない。
 # 1件だけ試して、検出できるか・1件あたり何秒かかるかをここで確定させる。
-Section '事前確認（マーカー検出と1件あたりの所要時間）'
-$pf    = [System.Diagnostics.Stopwatch]::StartNew()
-$probe = Invoke-Target -InputText '1:30'
-$pf.Stop()
-$per = $pf.Elapsed.TotalSeconds
-if ($probe.TimedOut -or (Get-Seconds $probe.Text) -ne '90') {
-  Fail 'マーカー（継続時間）を検出できる' (@(
-    "'1:30' を渡しても継続時間の行を検出できなかった。",
-    '以降のケースも同じように待ち続けるだけなので、ここで打ち切る。',
-    '出力の生データ:',
-    (Format-CaptureDiagnostics $probe.Bytes)
-  ) -join "`n")
+Section '事前確認（起動方法の校正・マーカー検出・1件あたりの所要時間）'
+# コンソールを割り当てるかどうかで標準入力の届き方と出力のコードページが
+# 変わる。正解は環境依存なので、'1:30' を実際に渡して 90 秒と解釈された
+# 方を採用する。どちらも駄目ならここで打ち切る（以降は待つだけなので）。
+$per     = 0.0
+$chosen  = $null
+$attempts = @()
+foreach ($alloc in @($false, $true)) {
+  $label = if ($alloc) { 'コンソールあり' } else { 'コンソールなし' }
+  $sw    = [System.Diagnostics.Stopwatch]::StartNew()
+  $p     = Invoke-Target -InputText '1:30' -AllocConsole $alloc
+  $sw.Stop()
+  if ((Get-Seconds $p.Text) -eq '90') {
+    $chosen = $alloc
+    $per    = $sw.Elapsed.TotalSeconds
+    Pass ('{0}: 1件 {1:N1}s で継続時間を検出できる' -f $label, $per)
+    break
+  }
+  Write-Host ('    {0}: 検出できず ({1:N1}s)' -f $label, $sw.Elapsed.TotalSeconds) -ForegroundColor Yellow
+  $attempts += ("── {0} ──`n{1}" -f $label, (Format-CaptureDiagnostics $p.Bytes))
+}
+if ($null -eq $chosen) {
+  Fail '継続時間の行を検出できる' ((@(
+    "'1:30' を渡しても継続時間の行を検出できなかった。どちらの起動方法でも駄目。",
+    '以降のケースも待つだけなので、ここで打ち切る。'
+  ) + $attempts) -join "`n")
   Write-Summary
   exit 1
 }
-Pass ('1件あたり {0:N1}s でマーカーを検出できる' -f $per)
+$script:AllocConsole = $chosen
 if ($per -gt 8) {
   Write-Host ('    警告: 1件 {0:N1}s は遅い。全ケースで約 {1:N0} 分かかる。' -f $per, ($per * 90 / 60)) `
     -ForegroundColor Yellow
