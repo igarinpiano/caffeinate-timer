@@ -34,7 +34,10 @@ $LauncherJs = Join-Path $Root 'bin/caffeinate-timer.js'
 $CmdExe     = Join-Path $env:SystemRoot 'System32\cmd.exe'
 
 $script:Passed = 0; $script:Failed = 0; $script:Skipped = 0
-$script:StartedPids = @()
+# PID ではなく Process をそのまま持つ。ハンドルを開いたままにしておくと
+# Windows がその PID を再利用しないため、後始末の taskkill が「終了済みの
+# PID を再利用した無関係のプロセス」を落とす事故を防げる。
+$script:StartedProcs = @()
 $script:Sw = [System.Diagnostics.Stopwatch]::StartNew()
 $script:SectionAt = 0.0
 
@@ -213,7 +216,7 @@ function Invoke-Target {
   $psi.RedirectStandardInput = $true
 
   $proc = [System.Diagnostics.Process]::Start($psi)
-  if ($WaitForExit) { $script:StartedPids += $proc.Id }
+  if ($WaitForExit) { $script:StartedProcs += $proc }
   try {
     $proc.StandardInput.WriteLine($InputText)
     $proc.StandardInput.WriteLine('')
@@ -526,12 +529,28 @@ if ($run.TimedOut -or -not ($run.Text -match '終了しました')) {
 }
 
 Section '/bg（バックグラウンド実行）'
-# ここだけ /bg を使う。待機プロセスが残るので後始末する。
+# ここだけ /bg を使う。/bg は Start-Process で切り離した powershell.exe を起こす。
+# それは SetThreadExecutionState でスリープと画面消灯を止めたまま指定秒数
+# （'/bg 90' なので5400秒 = 90分）眠る。cmd はすぐ終了するので、起動した
+# プロセスの PID を taskkill しても切り離された側には届かない。CI では
+# ランナーごと消えるが、実機で走らせると90分スリープできなくなる。
+# 起動前後の powershell.exe を比べ、増えた分をここで落とす。
+$psBefore = @(Get-Process powershell -ErrorAction SilentlyContinue | ForEach-Object Id)
 $bg = Invoke-Target -InputText '/bg 90' -TimeoutSec 120 -WaitForExit
 if ($bg.TimedOut) { Fail '/bg が起動して終了する' 'タイムアウトした' }
 else {
   AssertEq '5400' (Get-Seconds $bg.Text) '/bg でも 90 → 5400 秒'
   AssertMatch 'バックグラウンド' $bg.Text '/bg の案内が表示される'
+}
+$bgStrays = @(Get-Process powershell -ErrorAction SilentlyContinue |
+              Where-Object { $psBefore -notcontains $_.Id } | ForEach-Object Id)
+foreach ($bgPid in $bgStrays) {
+  try { & taskkill.exe /T /F /PID $bgPid 2>&1 | Out-Null } catch { }
+}
+if ($bgStrays.Count -gt 0) {
+  Pass ('/bg が切り離した待機プロセスを片付けた ({0}件)' -f $bgStrays.Count)
+} else {
+  Skip '/bg が切り離した待機プロセスの後始末' '増えた powershell.exe が無い'
 }
 
 Section 'コンソールのコードページを元に戻す'
@@ -586,8 +605,11 @@ AssertMatch '現在のバージョン' $r.Text '/settings が設定画面を表�
 # ── 後始末 ──────────────────────────────────────────────────────────────
 Section '後始末'
 Remove-Item $odd -Recurse -Force -ErrorAction SilentlyContinue
-foreach ($stray in $script:StartedPids) {
-  try { & taskkill.exe /T /F /PID $stray 2>&1 | Out-Null } catch { }
+foreach ($startedProc in $script:StartedProcs) {
+  # 既に終了しているものは触らない。Process のハンドルを持っている間は
+  # PID が再利用されないので、この判定は安全に効く。
+  try { if ($startedProc.HasExited) { continue } } catch { continue }
+  try { & taskkill.exe /T /F /PID $startedProc.Id 2>&1 | Out-Null } catch { }
 }
 Pass '一時ファイルと残留プロセスを片付けた'
 
