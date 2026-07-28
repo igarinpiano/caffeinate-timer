@@ -56,7 +56,9 @@ SIGPIPE で対象スクリプトも止まります（1 件あたり 0.1 秒程�
 | `.bat` が LF で保存される / ヘッダーに非 ASCII が混入する | `test_windows.sh` |
 | 上限内の冗長な表記（`1years2months3days…` など40文字）を誤って弾く | `test_limits.sh` / `test_windows_exec.ps1` |
 | macOS 上の `universal.sh`（BSD `date -v` 経路）だけが壊れる | `test_limits.sh` / `test_duration.sh`（macOS ジョブ） |
-| `timeout` や GNU sed 拡張に依存してテスト自体が macOS で動かない | CI の macOS ジョブ |
+| `timeout` や GNU sed 拡張に依存してテスト自体が macOS で動かない | `test_selfcheck.sh` |
+| 変数の直後の全角文字で bash 3.2 が異常終了する | `test_selfcheck.sh` |
+| 出力が空でも通ってしまう検査（空振り） | `test_duration.sh`（出力が空でないことを併せて検査） |
 | `cmd.exe` を裸の名前で spawn する（カレントディレクトリから乗っ取られる） | `test_launcher.sh` |
 | `cmd /c` の引用が外れる（`C:\Program Files (x86)\...` で起動できない） | `test_launcher.sh` |
 | 時間調整の桁数上限が無く int64 が桁あふれする | `test_duration.sh` / `test_adjust.sh` |

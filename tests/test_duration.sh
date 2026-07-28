@@ -104,6 +104,24 @@ for SCRIPT in $CT_TARGETS; do
   section "端末エスケープシーケンスの注入"
   # 生の ANSI シーケンスをそのままエコーバックしないこと。
   esc=$(printf '\033[31mBOOM\033[0m')
-  raw=$(printf '%s\n\n' "$esc" | timeout 15 bash "$SCRIPT" 2>&1 | sed -n '1,/継続時間\|❌/p' | tr -d '\r')
+  # 生の出力を先頭から取り、入力の中身がそのまま画面へ出ていないことを確認する。
+  # （出力が空だと無条件に通ってしまうため、何か出ていることも確かめる）
+  raw_out=$(tmpfile)
+  printf '%s\n\n' "$esc" | bash "$SCRIPT" > "$raw_out" 2>&1 &
+  raw_pid=$!
+  raw_i=0
+  while [ "$raw_i" -lt 200 ]; do
+    if LC_ALL=C grep -Eq '継続時間|❌' "$raw_out" 2>/dev/null; then break; fi
+    kill -0 "$raw_pid" 2>/dev/null || break
+    sleep 0.1
+    raw_i=$((raw_i + 1))
+  done
+  if kill -0 "$raw_pid" 2>/dev/null; then
+    have pkill && pkill -P "$raw_pid" 2>/dev/null
+    kill "$raw_pid" 2>/dev/null; sleep 0.1; kill -9 "$raw_pid" 2>/dev/null
+  fi
+  wait "$raw_pid" 2>/dev/null
+  raw=$(LC_ALL=C awk '/継続時間|❌/{print; exit} {print}' "$raw_out" | tr -d '\r')
+  assert_match 'Caffeinate|入力|❌' "$raw" "出力が空ではない（次の検査が空振りしないこと）"
   assert_no_match 'BOOM' "$raw" "エスケープ付き入力の内容をエコーバックしない"
 done
