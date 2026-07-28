@@ -84,7 +84,7 @@ $RED    = "$E[0;31m"
 $RESET  = "$E[0m"
 
 # ── バージョン定数 ───────────────────────────────────────
-$CURRENT_VERSION = "v1.4.10"
+$CURRENT_VERSION = "v1.4.11"
 
 # ── 全角→半角変換（本体入力と調整入力で共用）──────────
 # 英字は単位表記に現れる文字だけを対象にする。対象の語は
@@ -165,8 +165,10 @@ function Invoke-CaffeinateAdjust {
     # 本体入力と同じ全角→半角変換を通す（３０ｍ のような入力に対応）
     $a    = (Convert-CaffeinateFullWidth $AdjStr).Trim()
     # 先頭の符号だけは調整入力でのみ意味を持つため、ここでだけ全角を受け付ける。
-    # ＋(U+FF0B) －(U+FF0D) −(U+2212) を対象にし、先頭以外は変換しない。
-    $a    = $a -replace '^＋', '+' -replace '^－', '-' -replace '^−', '-'
+    # ＋(U+FF0B) －(U+FF0D) −(U+2212) ー(U+30FC) を対象にし、先頭以外は変換しない。
+    # ー は本来カタカナの長音符だが、日本語入力のかなモードではマイナスのつもりで
+    # 打たれるため、調整入力の先頭に限ってマイナスとして扱う。
+    $a    = $a -replace '^＋', '+' -replace '^－', '-' -replace '^−', '-' -replace '^ー', '-'
     $sign = 1L
     if     ($a.StartsWith('+')) { $a = $a.Substring(1) }
     elseif ($a.StartsWith('-')) { $sign = -1L; $a = $a.Substring(1) }

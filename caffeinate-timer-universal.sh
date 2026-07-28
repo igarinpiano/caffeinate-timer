@@ -53,7 +53,7 @@ _ct_cleanup_caffeinate() {
 }
 
 # ── バージョン・アップデート設定 ─────────────────────────
-CURRENT_VERSION="v1.4.10"
+CURRENT_VERSION="v1.4.11"
 _CT_VERSIONS_URL="https://raw.githubusercontent.com/igarinpiano/caffeinate-timer/main/versions.txt"
 _CT_RELEASES_BASE="https://github.com/igarinpiano/caffeinate-timer/releases/download"
 _CT_SCRIPT_FILENAME="caffeinate-timer-universal.sh"
@@ -598,8 +598,10 @@ _ct_parse_adj_secs() {
   # 本体入力と同じ全角→半角変換を通す（３０ｍ のような入力に対応）
   _a=$(_ct_fw_to_ascii "$_a")
   # 先頭の符号だけは調整入力でのみ意味を持つため、ここでだけ全角を受け付ける。
-  # ＋(U+FF0B) －(U+FF0D) −(U+2212) を対象にし、先頭以外は変換しない。
-  _a=$(printf '%s' "$_a" | sed -e 's/^＋/+/' -e 's/^－/-/' -e 's/^−/-/')
+  # ＋(U+FF0B) －(U+FF0D) −(U+2212) ー(U+30FC) を対象にし、先頭以外は変換しない。
+  # ー は本来カタカナの長音符だが、日本語入力のかなモードではマイナスのつもりで
+  # 打たれるため、調整入力の先頭に限ってマイナスとして扱う。
+  _a=$(printf '%s' "$_a" | sed -e 's/^＋/+/' -e 's/^－/-/' -e 's/^−/-/' -e 's/^ー/-/')
   if [[ "$_a" == +* ]]; then
     _a="${_a#+}"
   elif [[ "$_a" == -* ]]; then
