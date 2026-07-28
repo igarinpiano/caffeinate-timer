@@ -121,12 +121,26 @@ function AssertNotMatch([string]$pattern, [string]$actual, [string]$label) {
 }
 
 # ── 出力の取り込み ──────────────────────────────────────────────────────
+# 書き込み中のファイルを読む。
+# [IO.File]::ReadAllBytes は FileShare.Read で開くため、cmd がリダイレクト先を
+# 書き込み用に握っている間は共有違反になる。待機中のポーリングがこれで毎回空を
+# 返していたので、カウントダウンが続くケース（長い時間を指定した場合）は
+# 継続時間の行を見つけられず、値は正しいのにタイムアウト扱いになっていた。
+# 短い時間ならプロセスが終了してファイルが閉じるため、最後の読み出しだけは
+# 成功する。それで '1s' や '20s' は通り、'90' や '1000d' は落ちていた。
 function Get-CaptureBytes([string]$path, [int]$Retries = 1) {
   for ($i = 0; $i -lt $Retries; $i++) {
-    try { return [IO.File]::ReadAllBytes($path) } catch { }
+    try {
+      $fs = New-Object IO.FileStream(
+        $path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+      try {
+        $ms = New-Object IO.MemoryStream
+        try { $fs.CopyTo($ms); return ,$ms.ToArray() } finally { $ms.Dispose() }
+      } finally { $fs.Dispose() }
+    } catch { }
     if ($i -lt ($Retries - 1)) { Start-Sleep -Milliseconds 120 }
   }
-  return [byte[]]@()
+  return ,([byte[]]@())
 }
 
 # マーカーが現れるデコード結果を優先し、無ければ最初の候補を返す
@@ -286,6 +300,21 @@ AssertEq '4' ([string]$script:Encodings.Count) '候補のエンコーディン�
 $u8 = ConvertFrom-CaptureBytes ([Text.Encoding]::UTF8.GetBytes($okLine))
 AssertMatch $script:Marker $u8 'UTF-8 の出力からマーカーを検出できる'
 AssertEq '90' (Get-Seconds $u8) 'UTF-8 の出力から秒数を取り出せる'
+
+# 書き込み中のファイルを読めること。Windows では、他のプロセスが書き込み用に
+# 握っているファイルを FileShare.Read で開くと共有違反になる。ポーリングが
+# これで空を返すと、カウントダウンが続くケースが軒並みタイムアウト扱いになる。
+$busy   = Join-Path ([IO.Path]::GetTempPath()) ('ct-busy-' + [guid]::NewGuid().ToString('N') + '.log')
+$writer = New-Object IO.StreamWriter($busy, $false, [Text.Encoding]::UTF8)
+try {
+  $writer.Write($okLine)
+  $writer.Flush()
+  AssertEq '90' (Get-Seconds (ConvertFrom-CaptureBytes (Get-CaptureBytes $busy))) `
+    '書き込み中のファイルからでも秒数を取り出せる'
+} finally {
+  $writer.Dispose()
+  Remove-Item $busy -Force -ErrorAction SilentlyContinue
+}
 
 $bom = ConvertFrom-CaptureBytes ([byte[]](0xEF, 0xBB, 0xBF) + [Text.Encoding]::UTF8.GetBytes($okLine))
 AssertEq '90' (Get-Seconds $bom) 'BOM 付き UTF-8 でも秒数を取り出せる'
