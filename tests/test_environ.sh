@@ -9,10 +9,7 @@ source "$(dirname "$0")/lib.sh"
 
 cd "$CT_ROOT"
 
-case "$(uname -s)" in
-  Darwin) SCRIPT=caffeinate-timer.command ;;
-  *)      SCRIPT=caffeinate-timer-universal.sh ;;
-esac
+SCRIPT="$CT_SCRIPT"
 
 section "タイムゾーンを変えても年/月が計算できる"
 for tz in UTC Asia/Tokyo America/New_York America/Sao_Paulo Australia/Lord_Howe Pacific/Kiritimati Etc/GMT+12; do
@@ -26,7 +23,7 @@ section "DST 境界を跨ぐ往復計算"
 # エポック秒 → ローカル時刻 → 相対加算 → エポック秒 の往復が、
 # 時刻が重複・欠落する瞬間でも破綻しないことを確認する。
 # （実行時刻を偽装できないため、日時計算の形だけを直接検証する）
-if [ "$SCRIPT" = caffeinate-timer-universal.sh ] && [ "$(uname -s)" != Darwin ]; then
+if [ "$CT_OS" = linux ]; then
   roundtrip() { # tz epoch years months -> 秒数 or 空
     local tz="$1" e="$2" y="$3" m="$4" base rel="" out
     base=$(TZ="$tz" date -d "@$e" '+%Y-%m-%d %H:%M:%S') || return 1
@@ -95,9 +92,27 @@ if [ "$r" = "90" ]; then pass "systemd-inhibit / caffeinate が無くても解�
 else skip "systemd-inhibit / caffeinate が無くても解析できる" "最小 PATH では起動不可: '${r:-失敗}'"; fi
 
 section "標準入力が端末でなくても動く"
-r=$(printf '1:30\n\n' | timeout 15 bash "$SCRIPT" < <(printf '1:30\n\n') 2>&1 \
-    | sed -n '/継続時間\|❌/{p;q;}' | sed 's/\x1b\[[0-9;]*m//g')
-assert_match '継続時間' "$r" "パイプ経由の入力を処理できる"
+# duration() は常にパイプ経由で入力を渡すので、他のテストが通っていれば
+# パイプ自体は動いている。ここではそれ以外の非 TTY の与え方を確認する。
+#   - プロセス置換（< <(...)）
+#   - ファイルからのリダイレクト
+#   - here-string
+tmp_in=$(tmpfile)
+printf '1:30\n\n' > "$tmp_in"
+marker() { LC_ALL=C awk '/継続時間|❌/{print; exit}'; }
+
+r=$(bash "$SCRIPT" < <(printf '1:30\n\n') 2>&1 | marker | tr -d '\r')
+assert_match '継続時間' "$r" "プロセス置換からの入力を処理できる"
+
+r=$(bash "$SCRIPT" < "$tmp_in" 2>&1 | marker | tr -d '\r')
+assert_match '継続時間' "$r" "ファイルからのリダイレクト入力を処理できる"
+
+r=$(bash "$SCRIPT" <<< "$(printf '1:30\n')" 2>&1 | marker | tr -d '\r')
+assert_match '継続時間' "$r" "here-string からの入力を処理できる"
+
+# 標準入力が即 EOF（/dev/null）でも異常終了せずエラー表示で終わること
+r=$(bash "$SCRIPT" < /dev/null 2>&1 | marker | tr -d '\r')
+assert_match '継続時間|❌' "$r" "標準入力が空でも解析結果かエラーを表示する"
 
 section "TERM が未設定・dumb でも動く"
 for t in "" dumb xterm-256color; do

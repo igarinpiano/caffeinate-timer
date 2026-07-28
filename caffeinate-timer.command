@@ -52,7 +52,7 @@ _ct_cleanup_caffeinate() {
 }
 
 # ── バージョン・アップデート設定 ─────────────────────────
-CURRENT_VERSION="v1.4.10"
+CURRENT_VERSION="v1.4.11"
 _CT_VERSIONS_URL="https://raw.githubusercontent.com/igarinpiano/caffeinate-timer/main/versions.txt"
 _CT_RELEASES_BASE="https://github.com/igarinpiano/caffeinate-timer/releases/download"
 _CT_SCRIPT_FILENAME="caffeinate-timer.command"
@@ -495,6 +495,32 @@ _ct_bar() {
   printf '%s' "$_b"
 }
 
+# ── 全角→半角変換（本体入力と調整入力で共用）──────────
+# sed の y コマンドはバイト長一致が必要なため、UTF-8 のマルチバイト文字
+# （全角3バイト vs ASCII 1バイト）には使えない。s コマンドで1文字ずつ
+# 置き換える（バイト単位の置換なのでロケールに依存しない）。
+#
+# 英字は単位表記に現れる文字だけを対象にする。対象の語は
+#   year(s) yr(s) month(s) mo day(s) hour(s) hr(s)
+#   minute(s) min(s) second(s) sec(s)
+# で、使われる文字は a c d e h i m n o r s t u y の14種。
+# 単位語を増やすときはこの表も更新する（tests/test_fullwidth.sh が検出する）。
+# 大文字は半角大文字へ落とし、後段の小文字化に任せる。
+# 符号（＋ －）はここでは扱わない。符号が意味を持つのは調整入力だけで、
+# 本体入力では +90 / -5 のような符号付きは弾く仕様のため。
+_ct_fw_to_ascii() {
+  printf '%s' "$1" | sed \
+    -e 's/０/0/g' -e 's/１/1/g' -e 's/２/2/g' -e 's/３/3/g' -e 's/４/4/g' \
+    -e 's/５/5/g' -e 's/６/6/g' -e 's/７/7/g' -e 's/８/8/g' -e 's/９/9/g' \
+    -e 's/：/:/g' -e 's/．/./g' -e 's/　/ /g' \
+    -e 's/ａ/a/g' -e 's/ｃ/c/g' -e 's/ｄ/d/g' -e 's/ｅ/e/g' -e 's/ｈ/h/g' \
+    -e 's/ｉ/i/g' -e 's/ｍ/m/g' -e 's/ｎ/n/g' -e 's/ｏ/o/g' -e 's/ｒ/r/g' \
+    -e 's/ｓ/s/g' -e 's/ｔ/t/g' -e 's/ｕ/u/g' -e 's/ｙ/y/g' \
+    -e 's/Ａ/A/g' -e 's/Ｃ/C/g' -e 's/Ｄ/D/g' -e 's/Ｅ/E/g' -e 's/Ｈ/H/g' \
+    -e 's/Ｉ/I/g' -e 's/Ｍ/M/g' -e 's/Ｎ/N/g' -e 's/Ｏ/O/g' -e 's/Ｒ/R/g' \
+    -e 's/Ｓ/S/g' -e 's/Ｔ/T/g' -e 's/Ｕ/U/g' -e 's/Ｙ/Y/g'
+}
+
 # ── 時間調整: 差分秒数のパース ─────────────────────────────
 # $1 = 調整文字列（例: +30m, -1h, +1y2mo, +1d3h30m）
 # 標準出力に符号付き秒数を出力。パース失敗・0秒の場合は空文字を出力。
@@ -502,6 +528,13 @@ _ct_bar() {
 # y/mo: BSD date -v によるカレンダー演算（macOS）。
 _ct_parse_adj_secs() {
   local _a="$1" _sign=1
+  # 本体入力と同じ全角→半角変換を通す（３０ｍ のような入力に対応）
+  _a=$(_ct_fw_to_ascii "$_a")
+  # 先頭の符号だけは調整入力でのみ意味を持つため、ここでだけ全角を受け付ける。
+  # ＋(U+FF0B) －(U+FF0D) −(U+2212) ー(U+30FC) を対象にし、先頭以外は変換しない。
+  # ー は本来カタカナの長音符だが、日本語入力のかなモードではマイナスのつもりで
+  # 打たれるため、調整入力の先頭に限ってマイナスとして扱う。
+  _a=$(printf '%s' "$_a" | sed -e 's/^＋/+/' -e 's/^－/-/' -e 's/^−/-/' -e 's/^ー/-/')
   if [[ "$_a" == +* ]]; then
     _a="${_a#+}"
   elif [[ "$_a" == -* ]]; then
@@ -822,18 +855,8 @@ fi
 
 if [ "$_until_parsed" -eq 0 ]; then
 
-# ── 前処理①：全角→半角変換（sed s コマンドで1文字ずつ）─
-# ※ sed の y コマンドはバイト長一致が必要なため、
-#    UTF-8 マルチバイト文字（全角3バイト vs ASCII1バイト）
-#    には使用不可。同等の1文字単位変換を s コマンドで実現。
-# 対象：全角数字／コロン／小数点／単位 h m s d y o／全角スペース
-input=$(printf '%s' "$input" | sed \
-  -e 's/０/0/g' -e 's/１/1/g' -e 's/２/2/g' -e 's/３/3/g' -e 's/４/4/g' \
-  -e 's/５/5/g' -e 's/６/6/g' -e 's/７/7/g' -e 's/８/8/g' -e 's/９/9/g' \
-  -e 's/：/:/g' -e 's/．/./g' \
-  -e 's/ｈ/h/g' -e 's/ｍ/m/g' -e 's/ｓ/s/g' -e 's/ｄ/d/g' -e 's/ｙ/y/g' -e 's/ｏ/o/g' \
-  -e 's/　/ /g' \
-)
+# ── 前処理①：全角→半角変換 ─────────────────────────
+input=$(_ct_fw_to_ascii "$input")
 
 # ── 前処理②：半角スペース除去・小文字化（Bash 3.2 互換）─
 input="${input// /}"

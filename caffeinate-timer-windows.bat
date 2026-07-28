@@ -84,7 +84,42 @@ $RED    = "$E[0;31m"
 $RESET  = "$E[0m"
 
 # ── バージョン定数 ───────────────────────────────────────
-$CURRENT_VERSION = "v1.4.10"
+$CURRENT_VERSION = "v1.4.11"
+
+# ── 全角→半角変換（本体入力と調整入力で共用）──────────
+# 英字は単位表記に現れる文字だけを対象にする。対象の語は
+#   year(s) yr(s) month(s) mo day(s) hour(s) hr(s)
+#   minute(s) min(s) second(s) sec(s)
+# で、使われる文字は a c d e h i m n o r s t u y の14種。
+# 単位語を増やすときはこの表も更新する（tests/test_fullwidth.sh が検出する）。
+# 大文字は半角大文字へ落とし、後段の ToLower() に任せる
+# （.NET の ToLower() は全角大文字を全角小文字にするだけで半角化しない）。
+# 符号（＋ －）はここでは扱わない。符号が意味を持つのは調整入力だけで、
+# 本体入力では +90 / -5 のような符号付きは弾く仕様のため。
+$script:CaffeinateFwTable = @(
+    @('０','0'),@('１','1'),@('２','2'),@('３','3'),@('４','4'),
+    @('５','5'),@('６','6'),@('７','7'),@('８','8'),@('９','9'),
+    @('：',':'),@('．','.'),@('　',' '),
+    @('ａ','a'),@('ｃ','c'),@('ｄ','d'),@('ｅ','e'),@('ｈ','h'),
+    @('ｉ','i'),@('ｍ','m'),@('ｎ','n'),@('ｏ','o'),@('ｒ','r'),
+    @('ｓ','s'),@('ｔ','t'),@('ｕ','u'),@('ｙ','y'),
+    @('Ａ','A'),@('Ｃ','C'),@('Ｄ','D'),@('Ｅ','E'),@('Ｈ','H'),
+    @('Ｉ','I'),@('Ｍ','M'),@('Ｎ','N'),@('Ｏ','O'),@('Ｒ','R'),
+    @('Ｓ','S'),@('Ｔ','T'),@('Ｕ','U'),@('Ｙ','Y')
+)
+
+function Convert-CaffeinateFullWidth {
+    param([string]$Text)
+    foreach ($pair in $script:CaffeinateFwTable) { $Text = $Text.Replace($pair[0], $pair[1]) }
+    return $Text
+}
+
+# ── 画面クリア ──────────────────────────────────────────
+# 出力をリダイレクトした場合やコンソールを持たない環境では Clear-Host が
+# 例外になる。画面クリアは見た目だけの処理なので、失敗しても続行する。
+function Clear-CaffeinateScreen {
+    try { Clear-Host } catch { }
+}
 
 # ── スリープ防止の開始 ──────────────────────────────────
 # Add-Type が失敗する環境（言語モード制限など）では [WinPwr] が生成されず、
@@ -127,7 +162,13 @@ function Send-CaffeinateNotification {
 # y/mo: .NET の AddYears()/AddMonths() によるカレンダー演算。
 function Invoke-CaffeinateAdjust {
     param([string]$AdjStr)
-    $a    = $AdjStr.Trim()
+    # 本体入力と同じ全角→半角変換を通す（３０ｍ のような入力に対応）
+    $a    = (Convert-CaffeinateFullWidth $AdjStr).Trim()
+    # 先頭の符号だけは調整入力でのみ意味を持つため、ここでだけ全角を受け付ける。
+    # ＋(U+FF0B) －(U+FF0D) −(U+2212) ー(U+30FC) を対象にし、先頭以外は変換しない。
+    # ー は本来カタカナの長音符だが、日本語入力のかなモードではマイナスのつもりで
+    # 打たれるため、調整入力の先頭に限ってマイナスとして扱う。
+    $a    = $a -replace '^＋', '+' -replace '^－', '-' -replace '^−', '-' -replace '^ー', '-'
     $sign = 1L
     if     ($a.StartsWith('+')) { $a = $a.Substring(1) }
     elseif ($a.StartsWith('-')) { $sign = -1L; $a = $a.Substring(1) }
@@ -378,7 +419,7 @@ function Start-WaitMode {
 #   環境依存の問題（ExecutionPolicy / Defender 等）が多く
 #   堅牢な実装が困難なため）
 function Show-SettingsMenu {
-    Clear-Host
+    Clear-CaffeinateScreen
     Write-Host "${BOLD}${CYAN}⚙️  設定${RESET}"
     Write-Host "${CYAN}────────────────────────────────────────${RESET}"
     Write-Host ""
@@ -400,7 +441,7 @@ function Show-SettingsMenu {
 }
 
 # ── ヘッダー ────────────────────────────────────────────
-Clear-Host
+Clear-CaffeinateScreen
 Write-Host "${BOLD}${CYAN}☕  Caffeinate タイマー${RESET}"
 Write-Host "${CYAN}────────────────────────────────────────${RESET}"
 Write-Host ""
@@ -487,15 +528,8 @@ if ($raw.Trim() -match '^/until\s+(\d{1,2}):(\d{2})\s*$') {
 
 if (-not $untilParsed) {
 
-# ── 前処理①：全角→半角変換 ─────────────────────────────
-# （sed の y コマンド相当をPowerShell の Replace で実現）
-# 対象：全角数字／コロン／小数点／単位 h m s d／全角スペース
-$fwTable = @(
-    @('０','0'),@('１','1'),@('２','2'),@('３','3'),@('４','4'),
-    @('５','5'),@('６','6'),@('７','7'),@('８','8'),@('９','9'),
-    @('：',':'),@('．','.'),@('ｈ','h'),@('ｍ','m'),@('ｓ','s'),@('ｄ','d'),@('ｙ','y'),@('ｏ','o'),@('　',' ')
-)
-foreach ($pair in $fwTable) { $raw = $raw.Replace($pair[0], $pair[1]) }
+# ── 前処理①：全角→半角変換 ─────────────────────────
+$raw = Convert-CaffeinateFullWidth $raw
 
 # ── 前処理②：半角スペース除去・小文字化 ────────────────
 $inp = $raw.Replace(' ', '').ToLower()

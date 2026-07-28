@@ -20,6 +20,11 @@ tests/run.sh duration     # 名前に duration を含むものだけ実行
 | `test_launcher.sh` | `bin/caffeinate-timer.js` のプラットフォーム分岐 |
 | `test_environ.sh` | 極端な実行環境（タイムゾーン・DST 境界・ロケール・パス・PATH・TERM） |
 
+`test_selfcheck.sh` はテスト自身を検査するファイルですが、名前が `test_*.sh` なので
+`run.sh` が自動で拾います。CI でも他のスイートと同じように毎回走ります
+（Windows ジョブでは `tests/run.sh selfcheck` を明示的に呼んでいます。Windows には
+PowerShell があるので `test_windows_exec.ps1` のパース検査が実際に動きます）。
+
 `lib.sh` が共通のアサーションを提供します。`pwsh` が無い環境では PowerShell
 パーサによる検証だけがスキップされ、残りは通常どおり実行されます。
 
@@ -54,6 +59,14 @@ SIGPIPE で対象スクリプトも止まります（1 件あたり 0.1 秒程�
 | `.bat` に PowerShell 6.2 以降専用の数値リテラル（`0u`）が入る（5.1 で全体がパースエラー） | `test_windows.sh` |
 | `.bat` のヘッダー行に抽出マーカーの文字列が露出する（開始位置を誤検出する） | `test_windows.sh` |
 | `.bat` が LF で保存される / ヘッダーに非 ASCII が混入する | `test_windows.sh` |
+| 上限内の冗長な表記（`1years2months3days…` など40文字）を誤って弾く | `test_limits.sh` / `test_windows_exec.ps1` |
+| 単位語を増やしたのに全角変換表を更新せず、全角で打てなくなる | `test_fullwidth.sh` |
+| 全角入力が本体入力と調整入力で食い違う | `test_fullwidth.sh` |
+| 符号（`+` `-` `＋` `－`）を本体入力でも受理してしまう | `test_fullwidth.sh` / `test_windows_exec.ps1` |
+| macOS 上の `universal.sh`（BSD `date -v` 経路）だけが壊れる | `test_limits.sh` / `test_duration.sh`（macOS ジョブ） |
+| `timeout` や GNU sed 拡張に依存してテスト自体が macOS で動かない | `test_selfcheck.sh` |
+| 変数の直後の全角文字で bash 3.2 が異常終了する | `test_selfcheck.sh` |
+| 出力が空でも通ってしまう検査（空振り） | `test_duration.sh`（出力が空でないことを併せて検査） |
 | `cmd.exe` を裸の名前で spawn する（カレントディレクトリから乗っ取られる） | `test_launcher.sh` |
 | `cmd /c` の引用が外れる（`C:\Program Files (x86)\...` で起動できない） | `test_launcher.sh` |
 | 時間調整の桁数上限が無く int64 が桁あふれする | `test_duration.sh` / `test_adjust.sh` |
