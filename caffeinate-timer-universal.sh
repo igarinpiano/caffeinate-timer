@@ -628,10 +628,17 @@ _ct_parse_adj_secs() {
         _fut_cal=$(date -r "$_now_cal" -v "+${_month_adj}m" +%s) || return
       fi
     else
-      local _date_str="@${_now_cal}"
-      [ "$_year_adj" -gt 0 ] && _date_str="$_date_str +${_year_adj} years"
-      [ "$_month_adj" -gt 0 ] && _date_str="$_date_str +${_month_adj} months"
-      _fut_cal=$(date -d "$_date_str" +%s) || return
+      # GNU date の制約が2つある:
+      #  1) "@EPOCH" と相対指定（+N years）は併用できない。
+      #  2) 時刻の直後に置いた "+2 months" の "+2" はタイムゾーン指定(+02:00)と
+      #     解釈され、"months" だけが裸の +1ヶ月として適用されてしまう。
+      # 基準時刻をローカル時刻の文字列へ整形し、相対指定をその前に置くことで
+      # どちらも回避する（壁時計基準となり macOS の date -v と挙動が揃う）。
+      local _date_str _rel=""
+      _date_str=$(date -d "@${_now_cal}" '+%Y-%m-%d %H:%M:%S') || return
+      [ "$_year_adj" -gt 0 ]  && _rel="${_rel}+${_year_adj} years "
+      [ "$_month_adj" -gt 0 ] && _rel="${_rel}+${_month_adj} months "
+      _fut_cal=$(date -d "${_rel}${_date_str}" +%s) || return
     fi
     _total_sec=$(( _fut_cal - _now_cal + _sec ))
   fi
@@ -1153,7 +1160,10 @@ fi
 fi  # _until_parsed
 
 # ── 年・月のカレンダー演算（秒への変換）────────────────────────────
-# macOS: BSD date -v で月・年を加算。Linux: GNU date -d "@EPOCH +N years +M months"。
+# macOS: BSD date -v で月・年を加算。
+# Linux: GNU date は "@EPOCH" と相対指定を併用できず、さらに時刻の直後の "+N" を
+#        タイムゾーン指定と誤読するため、date -d "+N years YYYY-MM-DD HH:MM:SS"
+#        のように相対指定を基準時刻より前に置く。
 # sub_seconds は d/h/m/s 分のみの秒数（表示用に保持）。
 # _now_epoch を先頭で一度だけ取得し、以降の全時刻計算の基点として使い回す。
 # これにより、カレンダー演算・表示・最大秒数チェックの各ステップ間で
@@ -1185,10 +1195,22 @@ if [ "$year_val" -gt 0 ] || [ "$month_val" -gt 0 ]; then
       }
     fi
   else
-    _date_str="@${_now_epoch}"
-    [ "$year_val" -gt 0 ] && _date_str="$_date_str +${year_val} years"
-    [ "$month_val" -gt 0 ] && _date_str="$_date_str +${month_val} months"
-    _end_cal=$(date -d "$_date_str" +%s) || {
+    # GNU date の制約が2つある:
+    #  1) "@EPOCH" と相対指定（+N years）は併用できない。
+    #  2) 時刻の直後に置いた "+2 months" の "+2" はタイムゾーン指定(+02:00)と
+    #     解釈され、"months" だけが裸の +1ヶ月として適用されてしまう。
+    # 基準時刻をローカル時刻の文字列へ整形し、相対指定をその前に置くことで
+    # どちらも回避する（壁時計基準となり macOS の date -v と挙動が揃う）。
+    _date_str=$(date -d "@${_now_epoch}" '+%Y-%m-%d %H:%M:%S') || {
+      printf '%s\n' "${RED}❌ 日時の計算に失敗しました。${RESET}"
+      printf '\n'
+      read -r -p "Enterで閉じる..." _
+      exit 1
+    }
+    _rel=""
+    [ "$year_val" -gt 0 ]  && _rel="${_rel}+${year_val} years "
+    [ "$month_val" -gt 0 ] && _rel="${_rel}+${month_val} months "
+    _end_cal=$(date -d "${_rel}${_date_str}" +%s) || {
       printf '%s\n' "${RED}❌ 設定可能な最大時間を超えています。${RESET}"
       printf '\n'
       read -r -p "Enterで閉じる..." _
