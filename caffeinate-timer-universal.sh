@@ -628,7 +628,10 @@ _ct_parse_adj_secs() {
         _fut_cal=$(date -r "$_now_cal" -v "+${_month_adj}m" +%s) || return
       fi
     else
-      local _date_str="@${_now_cal}"
+      # GNU date は "@EPOCH" と相対指定（+N years）の併用を受け付けない。
+      # 一度ローカル時刻の文字列へ整形してから相対指定を足す。
+      local _date_str
+      _date_str=$(date -d "@${_now_cal}" '+%Y-%m-%d %H:%M:%S') || return
       [ "$_year_adj" -gt 0 ] && _date_str="$_date_str +${_year_adj} years"
       [ "$_month_adj" -gt 0 ] && _date_str="$_date_str +${_month_adj} months"
       _fut_cal=$(date -d "$_date_str" +%s) || return
@@ -1153,7 +1156,9 @@ fi
 fi  # _until_parsed
 
 # ── 年・月のカレンダー演算（秒への変換）────────────────────────────
-# macOS: BSD date -v で月・年を加算。Linux: GNU date -d "@EPOCH +N years +M months"。
+# macOS: BSD date -v で月・年を加算。
+# Linux: GNU date は "@EPOCH" と相対指定を併用できないため、一度ローカル時刻の
+#        文字列へ整形してから date -d "YYYY-MM-DD HH:MM:SS +N years" を用いる。
 # sub_seconds は d/h/m/s 分のみの秒数（表示用に保持）。
 # _now_epoch を先頭で一度だけ取得し、以降の全時刻計算の基点として使い回す。
 # これにより、カレンダー演算・表示・最大秒数チェックの各ステップ間で
@@ -1185,7 +1190,14 @@ if [ "$year_val" -gt 0 ] || [ "$month_val" -gt 0 ]; then
       }
     fi
   else
-    _date_str="@${_now_epoch}"
+    # GNU date は "@EPOCH" と相対指定（+N years）の併用を受け付けない。
+    # 一度ローカル時刻の文字列へ整形してから相対指定を足す。
+    _date_str=$(date -d "@${_now_epoch}" '+%Y-%m-%d %H:%M:%S') || {
+      printf '%s\n' "${RED}❌ 日時の計算に失敗しました。${RESET}"
+      printf '\n'
+      read -r -p "Enterで閉じる..." _
+      exit 1
+    }
     [ "$year_val" -gt 0 ] && _date_str="$_date_str +${year_val} years"
     [ "$month_val" -gt 0 ] && _date_str="$_date_str +${month_val} months"
     _end_cal=$(date -d "$_date_str" +%s) || {
