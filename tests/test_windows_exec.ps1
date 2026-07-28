@@ -243,11 +243,32 @@ foreach ($n in @(30, 100, 1000)) {
   AssertEq '5400' (Parse-Ok $z).Secs "先頭ゼロ${n}個 + '90' が5400秒"
 }
 
+Section '全角入力'
+# 全角で打っても半角と同じ結果になること（数字・記号・英字・全角スペース）。
+foreach ($pair in @(
+  @('90',        '９０'),
+  @('1:30',      '１：３０'),
+  @('45m',       '４５ｍ'),
+  @('1.5h',      '１．５ｈ'),
+  @('45minutes', '４５ｍｉｎｕｔｅｓ'),
+  @('1year',     '１ｙｅａｒ'),
+  @('1month',    '１ｍｏｎｔｈ'),
+  @('20seconds', '２０ｓｅｃｏｎｄｓ'),
+  @('1hour30minutes20seconds', '１ｈｏｕｒ３０ｍｉｎｕｔｅｓ２０ｓｅｃｏｎｄｓ'),
+  @('1YEAR',     '１ＹＥＡＲ')
+)) {
+  $hw = (Parse-Ok $pair[0]).Secs
+  $fw = (Parse-Ok $pair[1]).Secs
+  if ($hw -eq '') { Fail ("'{0}' の半角側が解析できる" -f $pair[0]) '秒数を取得できなかった' }
+  else { AssertEq $hw $fw ("'{0}' ⇔ '{1}'" -f $pair[0], $pair[1]) }
+}
+AssertEq (Parse-Ok '1h30m').Secs (Parse-Ok '１ｈ　３０ｍ').Secs "'1h30m' ⇔ '１ｈ　３０ｍ'（全角スペース入り）"
+
 Section '長いが正規化されない書き方は拒否される'
-# 全角の英字は変換表に無い（数字・記号と単位1文字だけが対象）ため解析に失敗する。
+# 単位語として解釈できない綴りや、同じ単位の重複はパターンに一致しない。
 # 弾くのが正しい挙動。
-foreach ($v in @('１ｙｅａｒ', '１ｍｉｎｕｔｅ', 'oneyear', '1year2year',
-                 '1years2years3years4years', '1h1h1h', '1m1m1m1m1m', '1mo1mo')) {
+foreach ($v in @('oneyear', '1year2year', '1years2years3years4years',
+                 '1h1h1h', '1m1m1m1m1m', '1mo1mo', 'ＩＹＥＡＲ', 'ｙｅａｒ')) {
   ErrCase $v '入力形式'
 }
 $vlong = '1years' * 500

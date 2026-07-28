@@ -13,7 +13,7 @@ fi
 
 # macOS では .command と universal.sh の両方を回す
 for SCRIPT in $CT_TARGETS; do
-  FN=$(extract_fn "$SCRIPT" _ct_parse_adj_secs)
+  FN=$(extract_adj_fn "$SCRIPT")
   if [ -z "$FN" ]; then
     skip "$SCRIPT: _ct_parse_adj_secs" "関数が見つからない"
     continue

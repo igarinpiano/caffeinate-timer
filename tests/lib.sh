@@ -158,6 +158,14 @@ duration_secs() {
   case "$r" in OK\ *) printf '%s' "${r#OK }" ;; *) printf '' ;; esac
 }
 
+# 調整パーサを依存関数ごと切り出す。
+# _ct_parse_adj_secs は _ct_fw_to_ascii（全角→半角変換）を呼ぶため、
+# 単体で切り出すと未定義になる。依存が増えたらここに追加する。
+extract_adj_fn() {
+  extract_fn "$1" _ct_fw_to_ascii
+  extract_fn "$1" _ct_parse_adj_secs
+}
+
 # 対象スクリプト内の関数定義だけを切り出す（行番号に依存しない）
 extract_fn() {
   awk -v fn="$2" '

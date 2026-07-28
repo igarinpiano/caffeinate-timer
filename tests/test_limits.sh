@@ -102,10 +102,11 @@ for SCRIPT in $CT_TARGETS; do
   done
 
   section "長いが正規化されない書き方は拒否される"
-  # 全角の英字は変換表に無い（数字・記号と単位1文字だけが対象）ため、
-  # 正規化されずそのまま解析に失敗する。弾くのが正しい挙動。
-  for v in '１ｙｅａｒ' '１ｍｉｎｕｔｅ' 'oneyear' '1year2year' \
-           '1years2years3years4years' '1h1h1h' '1m1m1m1m1m' '1mo1mo'; do
+  # 単位語として解釈できない綴りや、同じ単位の重複はパターンに一致しない。
+  # 弾くのが正しい挙動。（全角の英字は変換表に入っているので受理される。
+  #  全角の網羅的な確認は tests/test_fullwidth.sh が担当する）
+  for v in 'oneyear' '1year2year' '1years2years3years4years' \
+           '1h1h1h' '1m1m1m1m1m' '1mo1mo' 'ＩＹＥＡＲ' 'ｙｅａｒ'; do
     assert_match '^ERR' "$(duration "$SCRIPT" "$v")" "'$v' は拒否される"
   done
   # 半角の大文字は小文字化されるので、長い表記でも受理される（上と対になる確認）
@@ -161,7 +162,7 @@ for SCRIPT in $CT_TARGETS; do
   assert_match 'ERR.*入力形式' "$(duration "$SCRIPT" '1:1:1:1:1:1:1')" "7成分は拒否される"
 
   section "調整パーサの上限"
-  FN=$(extract_fn "$SCRIPT" _ct_parse_adj_secs)
+  FN=$(extract_adj_fn "$SCRIPT")
   if [ -z "$FN" ]; then
     skip "調整パーサの上限" "$SCRIPT に _ct_parse_adj_secs が無い"
   else
@@ -204,7 +205,9 @@ for SCRIPT in $CT_TARGETS; do
         assert_eq "$aref" "$(adj "$v")" "'$v' (${#v}文字) が '+1y2mo3d4h5m6s' と同じ秒数"
       done
     fi
-    assert_eq "" "$(adj '+１ｍｉｎｕｔｅ')" "全角英字の調整入力は拒否される"
+    # 全角は変換表を通るので受理される（網羅的な確認は test_fullwidth.sh）
+    assert_eq "$(adj '+1minute')" "$(adj '+１ｍｉｎｕｔｅ')" \
+      "全角の調整入力が半角と同じ結果になる"
 
     # 桁あふれが漏れないこと
     for v in '+99999999999999d' '+99999999999999h' '+999999999999999m' '+1234567890123456s'; do

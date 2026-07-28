@@ -55,6 +55,8 @@ SIGPIPE で対象スクリプトも止まります（1 件あたり 0.1 秒程�
 | `.bat` のヘッダー行に抽出マーカーの文字列が露出する（開始位置を誤検出する） | `test_windows.sh` |
 | `.bat` が LF で保存される / ヘッダーに非 ASCII が混入する | `test_windows.sh` |
 | 上限内の冗長な表記（`1years2months3days…` など40文字）を誤って弾く | `test_limits.sh` / `test_windows_exec.ps1` |
+| 単位語を増やしたのに全角変換表を更新せず、全角で打てなくなる | `test_fullwidth.sh` |
+| 全角入力が本体入力と調整入力で食い違う | `test_fullwidth.sh` |
 | macOS 上の `universal.sh`（BSD `date -v` 経路）だけが壊れる | `test_limits.sh` / `test_duration.sh`（macOS ジョブ） |
 | `timeout` や GNU sed 拡張に依存してテスト自体が macOS で動かない | `test_selfcheck.sh` |
 | 変数の直後の全角文字で bash 3.2 が異常終了する | `test_selfcheck.sh` |
