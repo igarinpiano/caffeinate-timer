@@ -21,10 +21,15 @@ to_fw() {
   printf '%s' "$1" | sed \
     -e 's/0/０/g' -e 's/1/１/g' -e 's/2/２/g' -e 's/3/３/g' -e 's/4/４/g' \
     -e 's/5/５/g' -e 's/6/６/g' -e 's/7/７/g' -e 's/8/８/g' -e 's/9/９/g' \
-    -e 's/:/：/g' -e 's/\./．/g' -e 's/+/＋/g' -e 's/-/－/g' \
+    -e 's/:/：/g' -e 's/\./．/g' \
     -e 's/a/ａ/g' -e 's/c/ｃ/g' -e 's/d/ｄ/g' -e 's/e/ｅ/g' -e 's/h/ｈ/g' \
     -e 's/i/ｉ/g' -e 's/m/ｍ/g' -e 's/n/ｎ/g' -e 's/o/ｏ/g' -e 's/r/ｒ/g' \
     -e 's/s/ｓ/g' -e 's/t/ｔ/g' -e 's/u/ｕ/g' -e 's/y/ｙ/g'
+}
+
+# 調整入力用: 符号も全角にする
+to_fw_signed() {
+  to_fw "$1" | sed -e 's/^+/＋/' -e 's/^-/－/'
 }
 
 for SCRIPT in $CT_TARGETS; do
@@ -62,6 +67,14 @@ for SCRIPT in $CT_TARGETS; do
     assert_match '^ERR' "$(duration "$SCRIPT" "$fw")" "'$fw' は拒否される"
   done
 
+  section "本体入力: 符号付きは半角でも全角でも弾かれる"
+  # 符号が意味を持つのは調整入力だけ。本体入力では符号を解釈しない。
+  # （変換表からも符号を外してあるため、全角の符号は半角化もされない）
+  for v in '+90' '-5' '＋90' '－5' '−5' '+1h' '-1h' '＋１ｈ' '－１ｈ' \
+           '+1:30' '－1:30' '+45m' '－45m' '+1y' '－1y'; do
+    assert_match 'ERR.*入力形式' "$(duration "$SCRIPT" "$v")" "'$v' は本体入力では拒否される"
+  done
+
   section "調整入力: 全角と半角で同じ結果になる"
   FN=$(extract_adj_fn "$SCRIPT")
   if ! printf '%s' "$FN" | grep -q '_ct_parse_adj_secs'; then
@@ -70,7 +83,7 @@ for SCRIPT in $CT_TARGETS; do
     adj() { ( OS="$(uname -s)"; eval "$FN"; _ct_parse_adj_secs "$1" 2>/dev/null ); }
     for hw in '+30m' '-1h' '+90' '+1d3h30m' '+45s' '+45min' '+1hour' '+1d' \
               '+1minute' '+20seconds' '+1yr'; do
-      fw=$(to_fw "$hw")
+      fw=$(to_fw_signed "$hw")
       hw_r=$(adj "$hw")
       if [ -z "$hw_r" ]; then
         fail "'$hw' の半角側が解析できる" "拒否された"
@@ -79,10 +92,18 @@ for SCRIPT in $CT_TARGETS; do
       fi
     done
 
-    # 全角の符号も解釈される（＋ と －）
+    # 全角の符号も解釈される（＋ U+FF0B / － U+FF0D / − U+2212）
     assert_eq "$(adj '+30m')" "$(adj '＋30m')"   "'+30m' ⇔ '＋30m'（全角プラス）"
     assert_eq "$(adj '-1h')"  "$(adj '－1h')"    "'-1h' ⇔ '－1h'（全角マイナス）"
+    assert_eq "$(adj '-1h')"  "$(adj '−1h')"    "'-1h' ⇔ '−1h'（U+2212 マイナス）"
     assert_eq "$(adj '+30m')" "$(adj '＋３０ｍ')" "'+30m' ⇔ '＋３０ｍ'（全て全角）"
+    assert_eq "$(adj '-1h')"  "$(adj '－１ｈ')"  "'-1h' ⇔ '－１ｈ'（全て全角）"
+
+    # 符号は先頭だけを対象にする（末尾や単独は拒否）
+    assert_eq "" "$(adj '30m＋')" "'30m＋'（末尾の全角プラス）は拒否される"
+    assert_eq "" "$(adj '30m+')"  "'30m+'（末尾の半角プラス）は拒否される"
+    assert_eq "" "$(adj '＋')"    "'＋' だけは拒否される"
+    assert_eq "" "$(adj '－')"    "'－' だけは拒否される"
 
     # 年・月はカレンダー演算が要るため、実行環境で使える場合のみ比較する
     if [ -n "$(adj '+1y')" ]; then
