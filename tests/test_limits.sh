@@ -109,10 +109,14 @@ for SCRIPT in $CT_TARGETS; do
            '1h1h1h' '1m1m1m1m1m' '1mo1mo' 'ＩＹＥＡＲ' 'ｙｅａｒ'; do
     assert_match '^ERR' "$(duration "$SCRIPT" "$v")" "'$v' は拒否される"
   done
-  # 半角の大文字は小文字化されるので、長い表記でも受理される（上と対になる確認）
-  assert_eq "OK 31536000" "$(duration "$SCRIPT" '1YEAR')"        "'1YEAR' は受理される"
-  assert_eq "OK 60"       "$(duration "$SCRIPT" '1MINUTES')"     "'1MINUTES' は受理される"
-  assert_eq "OK 36892800" "$(duration "$SCRIPT" '1YEARS2MONTHS')" "'1YEARS2MONTHS' は受理される"
+  # 半角の大文字は小文字化されるので、長い表記でも受理される（上と対になる確認）。
+  # 年・月を含む値は実行日によって秒数が変わる（1年の日数・月の日数がその日次第）ため、
+  # 固定の秒数ではなく短い表記（'1y' / '1y2mo'）を基準に動的に比較する。
+  assert_eq "OK 60" "$(duration "$SCRIPT" '1MINUTES')" "'1MINUTES' は受理される"
+  assert_eq "$(duration "$SCRIPT" '1y')" "$(duration "$SCRIPT" '1YEAR')" \
+    "'1YEAR' が '1y' と同じ秒数で受理される"
+  assert_eq "$(duration "$SCRIPT" '1y2mo')" "$(duration "$SCRIPT" '1YEARS2MONTHS')" \
+    "'1YEARS2MONTHS' が '1y2mo' と同じ秒数で受理される"
 
   section "上限を大きく超える入力"
   for v in 99999999999999999999 999999999999999999999999999999 \
