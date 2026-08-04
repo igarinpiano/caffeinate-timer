@@ -60,6 +60,20 @@ jobs:
           python3 --version
           command -v pwsh >/dev/null && pwsh --version || echo "pwsh: (none)"
 
+      - name: Diagnose date behavior (temporary)
+        if: runner.os == 'Linux'
+        run: |
+          date --version | head -1
+          ldd --version | head -1
+          _now=$(date +%s)
+          echo "now_epoch=$_now"
+          _date_str=$(date -d "@${_now}" '+%Y-%m-%d %H:%M:%S')
+          echo "date_str=$_date_str"
+          date -d "+9999 years ${_date_str}" +%s
+          echo "exit_9999y=$?"
+          date -d "+9999 years ${_date_str}" '+%Y-%m-%d'
+          echo "exit_9999y_ymd=$?"
+
       - name: Run tests
         run: tests/run.sh
 
