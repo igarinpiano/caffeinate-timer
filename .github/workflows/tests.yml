@@ -60,6 +60,23 @@ jobs:
           python3 --version
           command -v pwsh >/dev/null && pwsh --version || echo "pwsh: (none)"
 
+      - name: Diagnose date leap-year rollover (temporary)
+        if: runner.os == 'Linux'
+        run: |
+          date --version | head -1
+          echo "-- Feb29 +1 year (non-leap target) --"
+          date -d "+1 year 2028-02-29 12:00:00" +%Y-%m-%d 2>&1
+          echo "exit=$?"
+          echo "-- Feb29 +4 years (leap target) --"
+          date -d "+4 years 2028-02-29 12:00:00" +%Y-%m-%d 2>&1
+          echo "exit=$?"
+          echo "-- Jan31 +1 month (Feb has no 31) --"
+          date -d "+1 month 2028-01-31 12:00:00" +%Y-%m-%d 2>&1
+          echo "exit=$?"
+          echo "-- Jan31 +1 month +1 month (chained) --"
+          date -d "+1 month +1 month 2028-01-31 12:00:00" +%Y-%m-%d 2>&1
+          echo "exit=$?"
+
       - name: Run tests
         run: tests/run.sh
 
