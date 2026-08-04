@@ -64,15 +64,22 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           date --version | head -1
-          ldd --version | head -1
           _now=$(date +%s)
-          echo "now_epoch=$_now"
           _date_str=$(date -d "@${_now}" '+%Y-%m-%d %H:%M:%S')
           echo "date_str=$_date_str"
-          date -d "+9999 years ${_date_str}" +%s
-          echo "exit_9999y=$?"
-          date -d "+9999 years ${_date_str}" '+%Y-%m-%d'
-          echo "exit_9999y_ymd=$?"
+          for n in 1 9 10 99 100 999 1000 5000 8000 9000 9998 9999; do
+            if out=$(date -d "+${n} years ${_date_str}" +%s 2>&1); then
+              echo "n=$n OK -> $out"
+            else
+              echo "n=$n FAIL -> $out"
+            fi
+          done
+          echo "--- without plus sign ---"
+          date -d "9999 years ${_date_str}" +%s 2>&1 || echo "n=9999 (no +) FAIL"
+          echo "--- year keyword singular vs plural ---"
+          date -d "+9999 year ${_date_str}" +%s 2>&1 || echo "singular FAIL"
+          echo "--- date-only, no time-of-day ---"
+          date -d "+9999 years 2026-08-04" +%s 2>&1 || echo "date-only FAIL"
 
       - name: Run tests
         run: tests/run.sh
