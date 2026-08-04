@@ -163,6 +163,9 @@ duration_secs() {
 # 単体で切り出すと未定義になる。依存が増えたらここに追加する。
 extract_adj_fn() {
   extract_fn "$1" _ct_fw_to_ascii
+  extract_fn "$1" _ct_days_in_month
+  extract_fn "$1" _ct_days_from_civil
+  extract_fn "$1" _ct_calendar_add_fallback
   extract_fn "$1" _ct_parse_adj_secs
 }
 

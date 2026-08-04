@@ -588,6 +588,63 @@ _ct_fw_to_ascii() {
     -e 's/Ｓ/S/g' -e 's/Ｔ/T/g' -e 's/Ｕ/U/g' -e 's/Ｙ/Y/g'
 }
 
+# ── GNU date が扱えない超未来の年をフォールバック計算する ────
+# 一部の Linux 環境（Ubuntu 26.04 の uutils coreutils 版 date 等）は、計算結果の
+# 年が5桁（10000年）以上になる相対指定を "invalid date" として拒否する。GNU
+# coreutils 本来の date にはこの制限がないため、date -d が失敗した場合に限り、
+# Howard Hinnant の days_from_civil 法（グレゴリオ暦で年代を問わず正確）で手計算
+# する。年・月の入力は4桁が上限（tests/test_limits.sh）なので、通常の日時では
+# ここに入らず date -d が成功する。
+_ct_days_in_month() {  # $1=年 $2=月(1-12) -> 日数
+  case "$2" in
+    1|3|5|7|8|10|12) printf '31' ;;
+    4|6|9|11)        printf '30' ;;
+    *) if [ $(( $1 % 4 )) -eq 0 ] && { [ $(( $1 % 100 )) -ne 0 ] || [ $(( $1 % 400 )) -eq 0 ]; }; then
+         printf '29'
+       else
+         printf '28'
+       fi ;;
+  esac
+}
+
+_ct_days_from_civil() {  # $1=年 $2=月(1-12) $3=日 -> 1970-01-01 からの日数
+  local y=$1 m=$2 d=$3 era yoe doy
+  [ "$m" -le 2 ] && y=$((y - 1))
+  era=$(( y / 400 ))
+  yoe=$(( y - era * 400 ))
+  if [ "$m" -gt 2 ]; then doy=$(( (153 * (m - 3) + 2) / 5 + d - 1 ))
+  else                    doy=$(( (153 * (m + 9) + 2) / 5 + d - 1 ))
+  fi
+  printf '%d' $(( era * 146097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719468 ))
+}
+
+# 月は先にまとめて加算して年へ桁上げし、日は対象月の日数を超えた分だけ翌月へ
+# 繰り越す（GNU date 自身も mktime 型の正規化を一度だけ行うため、これと同じ
+# 結果になる。例: 1/31 に +1ヶ月 → 2/31 は存在しないので 3/2 へ繰り越す）。
+# タイムゾーンは基準時刻（$1）時点のオフセットを使う。対象日時が極端な未来の
+# ため、DST 等の厳密な再現はそもそも意味を持たない。
+_ct_calendar_add_fallback() {  # $1=基準epoch $2=年delta $3=月delta -> 結果epoch
+  local _base=$1 _yd=$2 _md=$3
+  local _raw _y _m _d _hh _mi _ss _mi_idx _dim _tz _tz_sign=1 _tz_h _tz_m _tz_off
+  _raw=$(date -d "@${_base}" '+%Y %m %d %H %M %S') || return 1
+  read -r _y _m _d _hh _mi _ss <<< "$_raw"
+  _y=$((10#$_y)); _m=$((10#$_m)); _d=$((10#$_d))
+  _hh=$((10#$_hh)); _mi=$((10#$_mi)); _ss=$((10#$_ss))
+  _mi_idx=$(( (_m - 1) + _md ))
+  _y=$(( _y + _yd + _mi_idx / 12 ))
+  _m=$(( _mi_idx % 12 + 1 ))
+  _dim=$(_ct_days_in_month "$_y" "$_m")
+  if [ "$_d" -gt "$_dim" ]; then
+    _d=$(( _d - _dim )); _m=$(( _m + 1 ))
+    [ "$_m" -gt 12 ] && { _m=1; _y=$(( _y + 1 )); }
+  fi
+  _tz=$(date -d "@${_base}" +%z) || return 1
+  case "$_tz" in -*) _tz_sign=-1; _tz="${_tz#-}" ;; +*) _tz="${_tz#+}" ;; esac
+  _tz_h=$((10#${_tz:0:2})); _tz_m=$((10#${_tz:2:2}))
+  _tz_off=$(( _tz_sign * (_tz_h * 3600 + _tz_m * 60) ))
+  printf '%d' $(( $(_ct_days_from_civil "$_y" "$_m" "$_d") * 86400 + _hh*3600 + _mi*60 + _ss - _tz_off ))
+}
+
 # ── 時間調整: 差分秒数のパース ─────────────────────────────
 # $1 = 調整文字列（例: +30m, -1h, +1y2mo, +1d3h30m）
 # 標準出力に符号付き秒数を出力。パース失敗・0秒の場合は空文字を出力。
@@ -671,7 +728,8 @@ _ct_parse_adj_secs() {
       _date_str=$(date -d "@${_now_cal}" '+%Y-%m-%d %H:%M:%S') || return
       [ "$_year_adj" -gt 0 ]  && _rel="${_rel}+${_year_adj} years "
       [ "$_month_adj" -gt 0 ] && _rel="${_rel}+${_month_adj} months "
-      _fut_cal=$(date -d "${_rel}${_date_str}" +%s) || return
+      _fut_cal=$(date -d "${_rel}${_date_str}" +%s 2>/dev/null) || \
+        _fut_cal=$(_ct_calendar_add_fallback "$_now_cal" "$_year_adj" "$_month_adj") || return
     fi
     _total_sec=$(( _fut_cal - _now_cal + _sec ))
   fi
@@ -1233,12 +1291,13 @@ if [ "$year_val" -gt 0 ] || [ "$month_val" -gt 0 ]; then
     _rel=""
     [ "$year_val" -gt 0 ]  && _rel="${_rel}+${year_val} years "
     [ "$month_val" -gt 0 ] && _rel="${_rel}+${month_val} months "
-    _end_cal=$(date -d "${_rel}${_date_str}" +%s) || {
-      printf '%s\n' "${RED}❌ 設定可能な最大時間を超えています。${RESET}"
-      printf '\n'
-      read -r -p "Enterで閉じる..." _
-      exit 1
-    }
+    _end_cal=$(date -d "${_rel}${_date_str}" +%s 2>/dev/null) || \
+      _end_cal=$(_ct_calendar_add_fallback "$_now_epoch" "$year_val" "$month_val") || {
+        printf '%s\n' "${RED}❌ 設定可能な最大時間を超えています。${RESET}"
+        printf '\n'
+        read -r -p "Enterで閉じる..." _
+        exit 1
+      }
   fi
   seconds=$(( _end_cal - _now_epoch + sub_seconds ))
 fi
