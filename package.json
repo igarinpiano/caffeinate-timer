@@ -1,6 +1,6 @@
 {
   "name": "caffeinate-timer",
-  "version": "1.4.11a",
+  "version": "1.4.11b",
   "description": "Sleep prevention timer for macOS, Linux, and Windows",
   "bin": {
     "caffeinate-timer": "bin/caffeinate-timer.js"
