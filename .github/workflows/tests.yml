@@ -6,11 +6,6 @@ on:
   pull_request:
   workflow_dispatch:
 
-# 同じブランチへ連続で push した場合は古い実行を打ち切る
-concurrency:
-  group: tests-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   # ── macOS / Linux ───────────────────────────────────────────────────────
   # .command（macOS）と universal.sh（macOS / Linux）を実際に動かす。
@@ -22,14 +17,19 @@ jobs:
       matrix:
         include:
           # Linux x64 / ARM64
+          - { os: ubuntu-latest,      label: 'Linux latest x64' }
+          - { os: ubuntu-26.04,       label: 'Linux x64 (26.04)' }
+          - { os: ubuntu-26.04-arm,   label: 'Linux ARM64 (26.04)' }
           - { os: ubuntu-24.04,       label: 'Linux x64 (24.04)' }
           - { os: ubuntu-24.04-arm,   label: 'Linux ARM64 (24.04)' }
-          - { os: ubuntu-22.04,       label: 'Linux x64 (22.04)' }
+          # ubuntu-22.04 runner will be deprecated on September 17th, 2026.
           # macOS ARM64 / Intel。Apple Silicon は latest を追随し、
           # Intel は latest ではなく macOS 26 に固定する。
           - { os: macos-latest,       label: 'macOS latest ARM64' }
+          - { os: macos-26,           label: 'macOS 26 ARM64' }
           - { os: macos-26-intel,     label: 'macOS 26 Intel' }
           - { os: macos-15,           label: 'macOS 15 ARM64' }
+          - { os: macos-15-intel,     label: 'macOS 15 Intel' }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -72,6 +72,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - { os: windows-latest, label: 'Windows latest x64' }
           - { os: windows-2025,   label: 'Windows 2025 x64' }
           - { os: windows-2022,   label: 'Windows 2022 x64' }
           - { os: windows-11-arm, label: 'Windows 11 ARM64' }
