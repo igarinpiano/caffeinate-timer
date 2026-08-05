@@ -228,53 +228,36 @@ function Invoke-CaffeinateAdjust {
     return ($sign * $totalSec)
 }
 
-$script:CaffeinateTimerUiTop    = -1
 $script:CaffeinateTimerUiActive = $false
 
 function Start-CaffeinateTimerUi {
-    try {
-        $script:CaffeinateTimerUiTop = [Console]::CursorTop
-        Write-Host ""
-        Write-Host ""
-        $script:CaffeinateTimerUiActive = $true
-    } catch {
-        $script:CaffeinateTimerUiTop    = -1
-        $script:CaffeinateTimerUiActive = $false
-    }
+    $script:CaffeinateTimerUiActive = $false
 }
 
+# カーソル位置は ESC[nF（n行上の行頭へ）/ ESC[nE（n行下の行頭へ）による相対
+# 移動だけで管理する。以前は [Console]::CursorTop で絶対行番号を覚えて
+# SetCursorPosition で戻していたが、conhost の実装（特に ConPTY 経由でスク
+# ロールバックの薄いバッファになっている場合）によっては範囲外例外を投げ、
+# 例外のたびに Start-CaffeinateTimerUi が呼び直されて新しい2行が毎フレーム
+# 追記される（=上書きされず1秒に数回出力される）不具合の原因になっていた。
+# 絶対座標に触れない相対移動ならバッファの巻き上げやスクロールバック量に
+# 左右されない。
 function Write-CaffeinateTimerUi {
     param(
         [string]$StatusLine,
         [string]$InputBuffer
     )
-    if (-not $script:CaffeinateTimerUiActive) { Start-CaffeinateTimerUi }
-    if (-not $script:CaffeinateTimerUiActive) {
-        Write-Host -NoNewline ("`r{0}" -f $StatusLine)
-        return
+    if ($script:CaffeinateTimerUiActive) {
+        Write-Host -NoNewline ("{0}[1F" -f $E)
+    } else {
+        $script:CaffeinateTimerUiActive = $true
     }
-    try {
-        [Console]::SetCursorPosition(0, $script:CaffeinateTimerUiTop)
-        Write-Host -NoNewline ("{0}{1}" -f "$E[2K", $StatusLine)
-        [Console]::SetCursorPosition(0, $script:CaffeinateTimerUiTop + 1)
-        Write-Host -NoNewline ("{0}  {1}調整{2} {3}" -f "$E[2K", $CYAN, $RESET, $InputBuffer)
-    } catch {
-        $script:CaffeinateTimerUiTop    = -1
-        $script:CaffeinateTimerUiActive = $false
-        Write-Host -NoNewline ("`r{0}" -f $StatusLine)
-    }
+    Write-Host -NoNewline ("{0}[2K{1}{0}[1E{0}[2K  {2}調整{3} {4}" -f $E, $StatusLine, $CYAN, $RESET, $InputBuffer)
 }
 
 function Clear-CaffeinateTimerUi {
     if (-not $script:CaffeinateTimerUiActive) { return }
-    try {
-        [Console]::SetCursorPosition(0, $script:CaffeinateTimerUiTop)
-        Write-Host -NoNewline "$E[2K"
-        [Console]::SetCursorPosition(0, $script:CaffeinateTimerUiTop + 1)
-        Write-Host -NoNewline "$E[2K"
-        [Console]::SetCursorPosition(0, $script:CaffeinateTimerUiTop)
-    } catch {}
-    $script:CaffeinateTimerUiTop    = -1
+    Write-Host -NoNewline ("{0}[1F{0}[2K{0}[1E{0}[2K{0}[1F" -f $E)
     $script:CaffeinateTimerUiActive = $false
 }
 
