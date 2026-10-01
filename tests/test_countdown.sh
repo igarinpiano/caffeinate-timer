@@ -125,6 +125,8 @@ PY
       assert_eq "" "$left" "SIG$sig 後にスリープ防止プロセスが残らない"
     fi
     for k in $left; do kill "$k" 2>/dev/null; done
-    kill "$feeder" 2>/dev/null; wait "$feeder" 2>/dev/null
+    # kill した相手の wait は 143 を返す。これがファイル最後のコマンドになると
+    # テストファイル自体の終了コードになり、run.sh が失敗扱いにするため握り潰す。
+    kill "$feeder" 2>/dev/null; wait "$feeder" 2>/dev/null || true
   done
 done
