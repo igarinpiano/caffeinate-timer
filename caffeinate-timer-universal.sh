@@ -26,6 +26,11 @@ trap_handler() {
   trap - INT
   printf '\r\033[K'
   printf '\n'
+  # スリープ防止が動いていないとき（入力待ち・終了後の「Enterで閉じる」・/bg 起動後）に
+  # 「スリープ防止を解除します」と表示すると事実と食い違うため、そのまま終了する。
+  if [ -z "$_caffeinate_pid" ]; then
+    exit 0
+  fi
   printf '%s\n' "${YELLOW}⚠️  中断されました。スリープ防止を解除します。${RESET}"
   _ct_cleanup_caffeinate
   printf '\n'
@@ -33,6 +38,21 @@ trap_handler() {
   exit 0
 }
 trap trap_handler INT
+
+# SIGTERM（kill・npm ランチャーからの転送）/ SIGHUP / SIGPIPE（出力先が閉じた）で
+# 終了するときも、スリープ防止プロセスを止めてから抜ける。trap が INT だけだと、
+# タイムアウト無しで起動したスリープ防止プロセスが孤児として残り、スリープを
+# 無期限に止め続けていた。
+_ct_term_handler() {
+  trap - TERM HUP PIPE
+  _ct_cleanup_caffeinate
+  exit 1
+}
+trap _ct_term_handler TERM HUP PIPE
+
+# exec が失敗したとき（実行権限が無い等）に、非対話シェルが即座に終了せず
+# 後続の || { ... } でエラーを表示できるようにする。
+shopt -s execfail
 
 _ct_begin_interruptible_run() {
   _ct_interrupt_requested=0
@@ -57,6 +77,7 @@ CURRENT_VERSION="v1.4.13"
 _CT_VERSIONS_URL="https://raw.githubusercontent.com/igarinpiano/caffeinate-timer/main/versions.txt"
 _CT_RELEASES_BASE="https://github.com/igarinpiano/caffeinate-timer/releases/download"
 _CT_SCRIPT_FILENAME="caffeinate-timer-universal.sh"
+_ct_update_tmpdir=""
 
 # 自分自身のパスを解決（シンボリックリンク追跡、Bash 3.2 互換）
 # realpath は macOS 12.3 以降・多くの Linux で標準搭載。
@@ -72,6 +93,22 @@ fi
 # URL 組み立てに使用する前に必ず通す。
 _ct_validate_version() {
   [[ "$1" =~ ^v[0-9]+\.[0-9]+\.[0-9]+[a-z]?$ ]]
+}
+
+# ── アップデート: バージョン比較 ─────────────────────────
+# $1 が $2 より新しければ 0 を返す（どちらも _ct_validate_version 済みが前提）。
+# 数値部は 10# で比較し、同じなら接尾辞（v1.4.1 < v1.4.1a < v1.4.1b）で比較する。
+_ct_version_newer() {
+  local _re='^v([0-9]+)\.([0-9]+)\.([0-9]+)([a-z]?)$' _i
+  [[ "$1" =~ $_re ]] || return 1
+  local _an=("${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}") _as="${BASH_REMATCH[4]}"
+  [[ "$2" =~ $_re ]] || return 1
+  local _bn=("${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}") _bs="${BASH_REMATCH[4]}"
+  for _i in 0 1 2; do
+    [ $((10#${_an[$_i]})) -gt $((10#${_bn[$_i]})) ] && return 0
+    [ $((10#${_an[$_i]})) -lt $((10#${_bn[$_i]})) ] && return 1
+  done
+  [[ "$_as" > "$_bs" ]]
 }
 
 # ── アップデート: versions.txt 取得 ──────────────────────
@@ -151,6 +188,8 @@ _ct_download_replace() {
     }
   fi
   chmod 700 "$_tmpdir" 2>/dev/null
+  # Ctrl+C（アップデートの trap）でも一時ディレクトリを消せるよう記録しておく
+  _ct_update_tmpdir="$_tmpdir"
   _tmp="${_tmpdir}/${_CT_SCRIPT_FILENAME}"
 
   printf '%s\n' "  ${BOLD}${_version}${RESET} をダウンロードしています..."
@@ -256,6 +295,7 @@ _ct_download_replace() {
   fi
   local _expected_hash=""
   _expected_hash=$(printf '%s\n' "$_cs_content" | awk -v fn="$_CT_SCRIPT_FILENAME" '{
+    sub(/^\*/, "", $2)
     sub(/^\.\//, "", $2)
     if ($2 == fn && length($1) == 64 && $1 ~ /^[0-9a-f]+$/) { print $1; exit }
   }')
@@ -328,6 +368,7 @@ _ct_download_replace() {
       # 失敗時: ステージングのみ削除し、原本とダウンロード済みファイルは残して
       # ユーザーが手動で回復できるようにする（一時ディレクトリは削除しない）。
       [ -n "$_staging" ] && rm -f "$_staging" 2>/dev/null
+      _ct_update_tmpdir=""
       printf '%s\n' "${RED}❌ ファイルの書き換えに失敗しました。アップデートを中止します。${RESET}"
       printf '%s\n' "  ・書き込み権限を確認してください。"
       printf '%s\n' "  ・スクリプトのパス: ${_CT_SCRIPT_PATH}（変更されていません）"
@@ -344,7 +385,7 @@ _ct_download_replace() {
   sleep 1
 
   # exec で現プロセスを新バージョンに置き換えて再起動
-  exec "$_CT_SCRIPT_PATH" || {
+  exec "$BASH" "$_CT_SCRIPT_PATH" || {
     printf '%s\n' "${RED}❌ 再起動に失敗しました。スクリプトを手動で再度起動してください。${RESET}"
     printf '%s\n' "  パス: ${_CT_SCRIPT_PATH}"
     printf '\n'
@@ -355,7 +396,7 @@ _ct_download_replace() {
 
 # ── アップデート: 自動アップデート (/update) ─────────────
 _ct_auto_update() {
-  trap 'printf "\n${YELLOW}⚠️  アップデートをキャンセルしました。${RESET}\n\n"; read -r -p "Enterで閉じる..." _; exit 0' INT
+  trap '[ -n "$_ct_update_tmpdir" ] && rm -rf "$_ct_update_tmpdir"; printf "\n${YELLOW}⚠️  アップデートをキャンセルしました。${RESET}\n\n"; read -r -p "Enterで閉じる..." _; exit 0' INT
 
   printf '\n'
   printf '%s\n' "バージョン情報を取得中..."
@@ -373,9 +414,9 @@ _ct_auto_update() {
     exit 1
   }
 
-  # 1行目の第1フィールドが最新バージョン
+  # 最初の空でない行の第1フィールドが最新バージョン
   local _latest
-  _latest=$(printf '%s\n' "$_vc" | head -1 | awk '{print $1}')
+  _latest=$(printf '%s\n' "$_vc" | awk 'NF { print $1; exit }')
 
   # バージョン文字列検証
   _ct_validate_version "$_latest" || {
@@ -389,7 +430,17 @@ _ct_auto_update() {
     printf '%s\n' "${GREEN}✅ すでに最新版（${CURRENT_VERSION}）です。${RESET}"
     printf '\n'
     read -r -p "Enterで戻る..." _
-    exec "$_CT_SCRIPT_PATH" || exit 0
+    exec "$BASH" "$_CT_SCRIPT_PATH" || exit 0
+  fi
+
+  # 公開中の最新版より手元の方が新しい場合（リリース直後の CDN キャッシュ等）に、
+  # 古い版を「最新版」としてダウングレードを提示しない。
+  if _ct_version_newer "$CURRENT_VERSION" "$_latest"; then
+    printf '%s\n' "${GREEN}✅ 現在のバージョン（${CURRENT_VERSION}）は公開中の最新版（${_latest}）より新しいため、アップデートは不要です。${RESET}"
+    printf '%s\n' "  特定のバージョンへ切り替える場合は /update --manual を使用してください。"
+    printf '\n'
+    read -r -p "Enterで戻る..." _
+    exec "$BASH" "$_CT_SCRIPT_PATH" || exit 0
   fi
 
   printf '%s\n' "最新版: ${GREEN}${_latest}${RESET}（現在: ${CURRENT_VERSION}）"
@@ -398,7 +449,7 @@ _ct_auto_update() {
   case "$_confirm" in
     y|Y) ;;
     *)
-      exec "$_CT_SCRIPT_PATH" || exit 0
+      exec "$BASH" "$_CT_SCRIPT_PATH" || exit 0
       ;;
   esac
 
@@ -407,7 +458,7 @@ _ct_auto_update() {
 
 # ── アップデート: 手動バージョン選択 (/update --manual) ──
 _ct_manual_update() {
-  trap 'printf "\n${YELLOW}⚠️  アップデートをキャンセルしました。${RESET}\n\n"; read -r -p "Enterで閉じる..." _; exit 0' INT
+  trap '[ -n "$_ct_update_tmpdir" ] && rm -rf "$_ct_update_tmpdir"; printf "\n${YELLOW}⚠️  アップデートをキャンセルしました。${RESET}\n\n"; read -r -p "Enterで閉じる..." _; exit 0' INT
 
   printf '\n'
   printf '%s\n' "バージョン一覧を取得中..."
@@ -439,7 +490,8 @@ _ct_manual_update() {
     # 説明文は versions.txt（遠隔取得）由来の自由文字列。端末へ出力する前に
     # 制御文字（ANSIエスケープ・DEL）を除去してエスケープ注入を防ぐ。
     # 0x00-0x1F と 0x7F のみ除去するため UTF-8 マルチバイト文字は保持される。
-    _ct_d=$(printf '%s' "$_ct_line" | cut -d' ' -f2- | LC_ALL=C tr -d '\000-\037\177')
+    # cut -s: 説明文の無い行（バージョンのみ）で行全体が説明として表示されないようにする
+    _ct_d=$(printf '%s' "$_ct_line" | cut -s -d' ' -f2- | LC_ALL=C tr -d '\000-\037\177')
     _ct_validate_version "$_ct_v" || continue
     _ct_vers+=("$_ct_v")
     _ct_descs+=("$_ct_d")
@@ -475,7 +527,10 @@ _ct_manual_update() {
     exit 1
   fi
 
-  local _ct_idx=$(( _ct_sel - 1 ))
+  # 10# で8進数誤認を防ぐ（"010" が 8 番、"08" が算術エラーになるのを防止）。
+  # 一覧は最大100件なので、4桁を超える値は桁あふれさせずに範囲外として扱う。
+  local _ct_idx=-1
+  [ "${#_ct_sel}" -le 4 ] && _ct_idx=$(( 10#$_ct_sel - 1 ))
   if [ "$_ct_idx" -lt 0 ] || [ "$_ct_idx" -ge "${#_ct_vers[@]}" ]; then
     printf '%s\n' "${RED}❌ 範囲外の番号です（1〜${#_ct_vers[@]}）。${RESET}"
     printf '\n'
@@ -489,7 +544,7 @@ _ct_manual_update() {
     printf '%s\n' "${GREEN}✅ すでにバージョン ${CURRENT_VERSION} です。${RESET}"
     printf '\n'
     read -r -p "Enterで戻る..." _
-    exec "$_CT_SCRIPT_PATH" || exit 0
+    exec "$BASH" "$_CT_SCRIPT_PATH" || exit 0
   fi
 
   printf '%s\n' "バージョン ${_ct_target} に切り替えます。（現在: ${CURRENT_VERSION}）"
@@ -498,7 +553,7 @@ _ct_manual_update() {
   case "$_ct_confirm" in
     y|Y) ;;
     *)
-      exec "$_CT_SCRIPT_PATH" || exit 0
+      exec "$BASH" "$_CT_SCRIPT_PATH" || exit 0
       ;;
   esac
 
@@ -526,7 +581,7 @@ _ct_show_settings() {
     "/update")          _ct_auto_update ;;
     "/update --manual") _ct_manual_update ;;
     "/back")
-      exec "$_CT_SCRIPT_PATH" || exit 0
+      exec "$BASH" "$_CT_SCRIPT_PATH" || exit 0
       ;;
     *)
       printf '%s\n' "${RED}❌ 不明なコマンドです。${RESET}"
@@ -673,7 +728,7 @@ _ct_parse_adj_secs() {
     -e 's/minutes?/m/g' -e 's/mins?/m/g' \
     -e 's/seconds?/s/g' -e 's/secs?/s/g' \
     -e 's/days?/d/g')
-  _a=$(printf '%s' "$_a" | sed -E 's/(^|[^0-9])0+([0-9])/\1\2/g')
+  _a=$(printf '%s' "$_a" | sed -E 's/(^|[^0-9.])0+([0-9])/\1\2/g')
   [ "${#_a}" -gt 20 ] && return
   local _year_adj=0 _month_adj=0 _sec=0
   if [[ "$_a" =~ ^([0-9]+)y(.*)$ ]]; then
@@ -770,6 +825,50 @@ _ct_timer_ui_clear() {
   _ct_timer_ui_active=0
 }
 
+# ── スリープ防止プロセスの起動（/wait とカウントダウンで共用）──────
+# $1 = systemd-inhibit が使えないときの警告文。
+# Linux: systemd-inhibit が存在しても logind が無い環境（コンテナ・一部の WSL 等）では
+# 即座に失敗する。そのまま PID を保持すると「防止しています」と表示しながら実際には
+# 何もしていない状態になり、エラー文もカウントダウン表示に割り込むため、起動直後に
+# 生存を確認し、失敗していれば警告してタイマーのみで続行する。
+#
+# どちらの OS でも本体（$$）の生存に連動させる。SIGKILL 等で trap が動かなかった
+# 場合でも、本体の終了と同時にスリープ防止が解除される（孤児として残らない）。
+#   macOS: caffeinate -w $$
+#   Linux: systemd-inhibit の下で「$$ が生きている間だけ待つ」ループを動かす
+_ct_start_sleep_block() {
+  local _watch='while kill -0 "$1" 2>/dev/null; do sleep 1; done'
+  _caffeinate_pid=""
+  if [[ "$OS" == "Darwin" ]]; then
+    caffeinate -u -d -w $$ &
+    _caffeinate_pid=$!
+    return
+  fi
+  if command -v systemd-inhibit &>/dev/null; then
+    systemd-inhibit \
+      --what=sleep:idle \
+      --who="Caffeinate Timer" \
+      --why="User requested caffeinate timer" \
+      --mode=block \
+      bash -c "$_watch" _ "$$" 2>/dev/null &
+    _caffeinate_pid=$!
+    sleep 0.3 2>/dev/null || sleep 1
+    if kill -0 "$_caffeinate_pid" 2>/dev/null; then
+      return
+    fi
+    wait "$_caffeinate_pid" 2>/dev/null
+    _caffeinate_pid=""
+    printf '%s\n' "${YELLOW}⚠️  systemd-inhibit を開始できませんでした（logind が利用できない可能性があります）。${RESET}"
+  else
+    printf '%s\n' "${YELLOW}⚠️  systemd-inhibit が見つかりません。${RESET}"
+  fi
+  printf '%s\n' "${YELLOW}    $1${RESET}"
+  printf '\n'
+  # カウントダウンの後始末（kill / wait）の流れを揃えるため、何もしないプロセスを置く
+  bash -c "$_watch" _ "$$" &
+  _caffeinate_pid=$!
+}
+
 # ── /wait モード: プロセス監視 ───────────────────────────
 # 引数: プロセス名または PID（前処理なしの raw 文字列）
 # セキュリティ:
@@ -789,7 +888,7 @@ _ct_run_wait() {
     return 1
   fi
 
-  local _wait_by_pid=0 _wait_pid=0 _wait_name=""
+  local _wait_by_pid=0 _wait_pid=0 _wait_name="" _wait_pat=""
   # macOS の最大PIDは 99998、Linux は通常 4194304
   local _pid_max=4194304
   [[ "$OS" == "Darwin" ]] && _pid_max=99998
@@ -814,7 +913,13 @@ _ct_run_wait() {
   elif [[ "$_wt" =~ ^[a-zA-Z0-9._-]+$ ]] && [ "${#_wt}" -le 64 ]; then
     # ── プロセス名モード ────────────────────────────────
     _wait_name="$_wt"
-    if ! pgrep -x -- "$_wait_name" >/dev/null 2>&1; then
+    # Linux の pgrep はプロセス名（/proc/PID/stat の comm）を15文字に切り詰めて照合するため、
+    # 16文字以上の名前を -x で渡すと実行中でも一致しない。照合だけ先頭15文字で行う。
+    _wait_pat="$_wait_name"
+    if [[ "$OS" != "Darwin" ]] && [ "${#_wait_pat}" -gt 15 ]; then
+      _wait_pat="${_wait_pat:0:15}"
+    fi
+    if ! pgrep -x -- "$_wait_pat" >/dev/null 2>&1; then
       printf '%s\n' "${RED}❌ プロセス '${_wait_name}' が見つかりません。${RESET}"
       printf '\n'
       read -r -p "Enterで閉じる..." _
@@ -844,24 +949,7 @@ _ct_run_wait() {
   printf '\n'
 
   # スリープ防止をバックグラウンドで起動
-  if [[ "$OS" == "Darwin" ]]; then
-    caffeinate -u -d &
-    _caffeinate_pid=$!
-  else
-    if command -v systemd-inhibit &>/dev/null; then
-      systemd-inhibit \
-        --what=sleep:idle \
-        --who="Caffeinate Timer" \
-        --why="User requested caffeinate timer" \
-        --mode=block \
-        sleep infinity &
-      _caffeinate_pid=$!
-    else
-      printf '%s\n' "${YELLOW}⚠️  systemd-inhibit が見つかりません。スリープ防止なしで待機します。${RESET}"
-      printf '\n'
-      _caffeinate_pid=""
-    fi
-  fi
+  _ct_start_sleep_block "スリープ防止なしで待機します。"
 
   local _w_start _elapsed _e_h _e_m _e_s _w_tick _alive
   local _w_interrupted=0
@@ -880,7 +968,7 @@ _ct_run_wait() {
     _e_h=$(( _elapsed / 3600 ))
     _e_m=$(( (_elapsed % 3600) / 60 ))
     _e_s=$(( _elapsed % 60 ))
-    printf '\r  ⏳ %s の終了を待機中...  経過時間: %02d:%02d:%02d   ' \
+    printf '\r\033[K  ⏳ %s の終了を待機中...  経過時間: %02d:%02d:%02d   ' \
       "$_w_target" "$_e_h" "$_e_m" "$_e_s"
 
     # 3秒ごとにプロセスの生存確認
@@ -891,7 +979,7 @@ _ct_run_wait() {
       if [ "$_wait_by_pid" -eq 1 ]; then
         ps -p "$_wait_pid" -o pid= >/dev/null 2>&1 && _alive=1
       else
-        pgrep -x -- "$_wait_name" >/dev/null 2>&1 && _alive=1
+        pgrep -x -- "$_wait_pat" >/dev/null 2>&1 && _alive=1
       fi
       [ "$_alive" -eq 0 ] && break
     fi
@@ -915,6 +1003,7 @@ _ct_run_wait() {
   printf '%s\n' "${GREEN}✅ プロセスが終了しました。スリープ防止を解除します。 ($(date "+%H:%M:%S"))${RESET}"
   printf '\n'
   read -r -p "Enterで閉じる..." _
+  return 0
 }
 
 
@@ -946,6 +1035,17 @@ printf '\n'
 read -r -p "入力: " input
 printf '\n'
 
+# ── 前処理⓪：タブ・全角の正規化と前後の空白除去 ─────────────
+# コマンド（/until /wait /bg）の判定より前に行う。後で行うと、
+# 「/until １８：３０」「/bg<TAB>90」「/wait　1234」のように全角数字・全角空白・
+# タブを含む入力がコマンドとして認識されず、本体入力とも挙動が食い違う。
+# _ct_fw_to_ascii は数字・記号・単位語の英字を半角へ寄せるだけなので、
+# コマンド名（/settings 等）やプロセス名の判定には影響しない。
+input="${input//$'\t'/ }"
+input=$(_ct_fw_to_ascii "$input")
+input="${input#"${input%%[! ]*}"}"
+input="${input%"${input##*[! ]}"}"
+
 # ── /settings コマンド ────────────────────────────────────
 # 前処理を通す前に検出する（スペース除去・小文字化の影響を受けないよう先に処理）
 if [ "$input" = "/settings" ]; then
@@ -956,9 +1056,10 @@ fi
 # ── /wait コマンド ─────────────────────────────────────────
 # 前処理を通す前に検出する。ターゲットはプロセス名/PIDなので
 # 時間文字列の正規化パイプラインを通さない。
-if [[ "$input" == "/wait "* ]]; then
-  _ct_run_wait "${input#/wait }"
-  exit 0
+# 引数なしの /wait も _ct_run_wait へ渡し、専用のエラーを表示させる。
+if [ "$input" = "/wait" ] || [[ "$input" == "/wait "* ]]; then
+  _ct_run_wait "${input#/wait}"
+  exit $?
 fi
 
 # ── /bg プレフィックス ─────────────────────────────────────
@@ -968,6 +1069,7 @@ _bg_mode=0
 if [[ "$input" == "/bg "* ]]; then
   _bg_mode=1
   input="${input#/bg }"
+  input="${input#"${input%%[! ]*}"}"
 elif [ "$input" = "/bg" ]; then
   printf '%s\n' "${RED}❌ /bg の後に時間を指定してください。${RESET}"
   printf '%s\n' "例: ${CYAN}/bg 90${RESET}  または  ${CYAN}/bg 1h30m${RESET}"
@@ -981,8 +1083,8 @@ fi
 # セキュリティ: HH:MM のみ許可。数値は 10# で8進数誤認を防止した上で範囲チェック。
 # macOS: BSD date -v / Linux: GNU date -d で今日の指定時刻を算出。
 _until_parsed=0
-if [[ "$input" == "/until "* ]]; then
-  _until_arg="${input#/until }"
+if [ "$input" = "/until" ] || [[ "$input" == "/until "* ]]; then
+  _until_arg="${input#/until}"
   _until_arg="${_until_arg// /}"
   if ! [[ "$_until_arg" =~ ^([0-9]{1,2}):([0-9]{2})$ ]]; then
     printf '%s\n' "${RED}❌ /until の形式が不正です。HH:MM 形式で指定してください。${RESET}"
@@ -1016,9 +1118,24 @@ if [[ "$input" == "/until "* ]]; then
       exit 1
     }
   fi
-  # 指定時刻が現時刻以前（同秒含む）なら翌日として扱う
+  # 指定時刻が現時刻以前（同秒含む）なら翌日として扱う。
+  # 86400 秒を足すと、夏時間の切り替わる日（23/25時間）に1時間ずれるため、
+  # 翌日の日付で改めて壁時計の時刻を求める。
   if [ "$_target_epoch" -le "$_now_epoch" ]; then
-    _target_epoch=$(( _target_epoch + 86400 ))
+    if [[ "$OS" == "Darwin" ]]; then
+      _target_epoch=$(date -r "$_now_epoch" -v +1d -v "${_u_h}H" -v "${_u_m}M" -v 0S +%s) || _target_epoch=""
+    else
+      # 相対指定は時刻の前に置く（直後に置くとタイムゾーン指定と誤読される）。
+      # 正午を基準にして、夏時間の切り替え時刻付近での日付の取り違えを避ける。
+      _u_tomorrow=$(date -d "+1 day $(date -d "@${_now_epoch}" +%Y-%m-%d) 12:00:00" +%Y-%m-%d) &&
+        _target_epoch=$(date -d "${_u_tomorrow} $(printf '%02d:%02d:00' "$_u_h" "$_u_m")" +%s) || _target_epoch=""
+    fi
+    if [ -z "$_target_epoch" ]; then
+      printf '%s\n' "${RED}❌ 時刻の計算に失敗しました。${RESET}"
+      printf '\n'
+      read -r -p "Enterで閉じる..." _
+      exit 1
+    fi
   fi
   seconds=$(( _target_epoch - _now_epoch ))
   sub_seconds=$seconds
@@ -1054,9 +1171,11 @@ input=$(printf '%s' "$input" | sed -E \
 # ── 前処理③：各数値グループの先頭ゼロを除去 ──────────────────────────
 # 10# で8進数誤認は防いでいるが、文字列長チェックが先頭ゼロで
 # 誤判定しないよう正規化する（例: 000001h → 1h、00:05 → 0:5）。
+# 小数点の直後は除外する。除外しないと小数部の先頭ゼロまで消え、
+# 0.001h が 0.1h（3秒 → 360秒）、1.05 が 1.5（63秒 → 90秒）に化ける。
 # bash の =~ は macOS デフォルトの 3.2 では交替 (^|X) の ^ が
 # 正しく動作しないため、外部コマンド sed を使用する。
-input=$(printf '%s' "$input" | sed -E 's/(^|[^0-9])0+([0-9])/\1\2/g')
+input=$(printf '%s' "$input" | sed -E 's/(^|[^0-9.])0+([0-9])/\1\2/g')
 
 # ── 年・月コンポーネントの抽出 ──────────────────────────────────────
 # カレンダー演算が必要なため、パターンマッチの前に y / mo を分離する。
@@ -1064,6 +1183,7 @@ input=$(printf '%s' "$input" | sed -E 's/(^|[^0-9])0+([0-9])/\1\2/g')
 # 桁数を4桁以内に制限し date コマンドへの過大入力を防ぐ。
 year_val=0
 month_val=0
+_ym_given=0   # 0y / 0mo のように年・月が明示されたか（0秒のエラーを正しく出すため）
 
 if [[ "$input" =~ ^([0-9]+)y(.*)$ ]]; then
   if [ "${#BASH_REMATCH[1]}" -gt 4 ]; then
@@ -1075,6 +1195,7 @@ if [[ "$input" =~ ^([0-9]+)y(.*)$ ]]; then
   fi
   year_val=$(( 10#${BASH_REMATCH[1]} ))
   input="${BASH_REMATCH[2]}"
+  _ym_given=1
 fi
 
 if [[ "$input" =~ ^([0-9]+)mo(.*)$ ]]; then
@@ -1087,6 +1208,7 @@ if [[ "$input" =~ ^([0-9]+)mo(.*)$ ]]; then
   fi
   month_val=$(( 10#${BASH_REMATCH[1]} ))
   input="${BASH_REMATCH[2]}"
+  _ym_given=1
 fi
 
 # ── 入力文字数チェック ───────────────────────────────────
@@ -1106,7 +1228,8 @@ seconds=0
 # ── パターンマッチング ───────────────────────────────────
 
 # 0) 年・月のみ（d/h/m/s なし）
-if [[ -z "$input" ]] && (( year_val > 0 || month_val > 0 )); then
+#    0y / 0mo も「形式不明」ではなく 0 秒として後段の 0秒チェックに任せる
+if [[ -z "$input" ]] && [ "$_ym_given" -eq 1 ]; then
   : # d/h/m/s 分は 0 秒として扱う（年・月のみ指定）
 
 # 1) 整数のみ → 分
@@ -1155,10 +1278,14 @@ elif [[ "$input" =~ ^([0-9]+):([0-9]+):([0-9]+):([0-9]+):([0-9]+):([0-9]+)$ ]]; 
   month_val=$(( 10#${BASH_REMATCH[2]} ))
   seconds=$(( 10#${BASH_REMATCH[3]} * 86400 + 10#${BASH_REMATCH[4]} * 3600 + 10#${BASH_REMATCH[5]} * 60 + 10#${BASH_REMATCH[6]} ))
 
-# 5) 小数h → 時間（例: 1.5h）
-elif [[ "$input" =~ ^([0-9]+)\.([0-9]+)h$ ]]; then
+# 5) 小数 + 単位（例: 1.5h / 1.5d / 2.5m / 0.5s）
+#    正規化後16文字以内なので 整数部+小数部 は d で最大14桁 → ×86400 でも int64 に収まる
+elif [[ "$input" =~ ^([0-9]+)\.([0-9]+)([dhms])$ ]]; then
   ip=${BASH_REMATCH[1]}; dp=${BASH_REMATCH[2]:0:9}; dl=${#dp}
-  seconds=$(( (10#$ip * (10**dl) + 10#$dp) * 3600 / (10**dl) ))
+  case "${BASH_REMATCH[3]}" in
+    d) _unit=86400 ;; h) _unit=3600 ;; m) _unit=60 ;; s) _unit=1 ;;
+  esac
+  seconds=$(( (10#$ip * (10**dl) + 10#$dp) * _unit / (10**dl) ))
 
 # 6) XdYhZmWs（最も長いものを先に）
 elif [[ "$input" =~ ^([0-9]+)d([0-9]+)h([0-9]+)m([0-9]+)s$ ]]; then
@@ -1362,7 +1489,7 @@ printf '\n'
 # スリープ防止処理を nohup + disown でバックグラウンドに逃がし、
 # 終了時に通知を送る。$seconds は検証済み正整数のみ渡す。
 # Linux では notify-send に必要な DISPLAY / DBUS_SESSION_BUS_ADDRESS を
-# 子プロセスに引き継ぐため export して渡す。
+# 子プロセスに引き継ぐため export して渡す（値があるときだけ）。
 if [ "$_bg_mode" -eq 1 ]; then
   printf '%s\n' "${YELLOW}🔄 バックグラウンドで実行します。終了時に通知が届きます。${RESET}"
   printf '\n'
@@ -1374,8 +1501,10 @@ if [ "$_bg_mode" -eq 1 ]; then
     # Linux: systemd-inhibit が使える場合はそちらを優先。
     # DISPLAY / DBUS_SESSION_BUS_ADDRESS を明示的にエクスポートして
     # notify-send がデスクトップセッションに接続できるようにする。
-    export DISPLAY="${DISPLAY:-}"
-    export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-}"
+    # 未設定のときに空文字で export すると、notify-send（GDBus）が空のアドレスを
+    # 解釈しようとして失敗し、$XDG_RUNTIME_DIR/bus への既定の接続も行われなくなる。
+    [ -n "${DISPLAY:-}" ] && export DISPLAY
+    [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ] && export DBUS_SESSION_BUS_ADDRESS
     if command -v systemd-inhibit &>/dev/null; then
       nohup bash -c 'systemd-inhibit \
         --what=sleep:idle \
@@ -1387,6 +1516,8 @@ if [ "$_bg_mode" -eq 1 ]; then
           notify-send "Caffeinate Timer ☕" "スリープ防止が終了しました。" \
           >/dev/null 2>&1 || true' -- "$seconds" >/dev/null 2>&1 &
     else
+      printf '%s\n' "${YELLOW}⚠️  systemd-inhibit が見つかりません。スリープ防止は行われず、終了時の通知のみ行います。${RESET}"
+      printf '\n'
       nohup bash -c 'sleep "$1"; \
         command -v notify-send >/dev/null 2>&1 && \
           notify-send "Caffeinate Timer ☕" "スリープ防止が終了しました。" \
@@ -1409,27 +1540,10 @@ printf '%s
 ' "  ${CYAN}ℹ️  実行中に +30m / -1h などを入力して Enter で残り時間を調整できます。${RESET}"
 printf '\n'
 
-if [[ "$OS" == "Darwin" ]]; then
-  caffeinate -u -d &
-  _caffeinate_pid=$!
-else
-  if command -v systemd-inhibit &>/dev/null; then
-    systemd-inhibit \
-      --what=sleep:idle \
-      --who="Caffeinate Timer" \
-      --why="User requested caffeinate timer" \
-      --mode=block \
-      sleep infinity &
-    _caffeinate_pid=$!
-  else
-    printf '%s\n' "${YELLOW}⚠️  systemd-inhibit が見つかりません。スリープ防止機能は使えないため、タイマーとしてのみ続行します。${RESET}"
-    printf '\n'
-    sleep infinity &
-    _caffeinate_pid=$!
-  fi
-fi
+_ct_start_sleep_block "スリープ防止機能は使えないため、タイマーとしてのみ続行します。"
 
 _ct_adjust_buffer=""
+_ct_esc_state=0   # 0: 通常 / 1: ESC の直後 / 2: CSI・SS3 シーケンスの途中
 _ct_interrupted=0
 _ct_start=$(date +%s)
 _ct_begin_interruptible_run
@@ -1469,31 +1583,58 @@ while true; do
   if [ "$_ct_remain" -eq 0 ]; then break; fi
 
   IFS= read -r -n 1 -s -t 1 _adj_key 2>/dev/null
-  if [ "$?" -eq 0 ]; then
-    case "$_adj_key" in
-      '')
-        if [ -n "$_ct_adjust_buffer" ]; then
-          _adj_delta=$(_ct_parse_adj_secs "$_ct_adjust_buffer")
-          _ct_adjust_buffer=""
-          if [ -n "$_adj_delta" ]; then
-            _ct_now_adj=$(date +%s)
-            _ct_elapsed_adj=$(( _ct_now_adj - _ct_start ))
-            _new_seconds=$(( seconds + _adj_delta ))
-            if [ "$(( _new_seconds - _ct_elapsed_adj ))" -le 0 ]; then
-              _new_seconds=$(( _ct_elapsed_adj + 1 ))
-            fi
-            seconds=$_new_seconds
-          fi
-        fi
-        ;;
-      $'\177'|$'\010')
-        [ "${#_ct_adjust_buffer}" -gt 0 ] && _ct_adjust_buffer="${_ct_adjust_buffer%?}"
-        ;;
-      [0-9a-zA-Z+-])
-        [ "${#_ct_adjust_buffer}" -lt 20 ] && _ct_adjust_buffer="${_ct_adjust_buffer}${_adj_key}"
-        ;;
-    esac
+  _adj_rc=$?
+  if [ "$_adj_rc" -ne 0 ]; then
+    # 128 を超える値はタイムアウト（または Ctrl+C による中断）。それ以外は標準入力の
+    # EOF 等で、read が待たずに即座に戻るため、そのままだとループが CPU を使い切る。
+    [ "$_adj_rc" -le 128 ] && sleep 1
+    continue
   fi
+  # 矢印キー・ファンクションキー等のエスケープシーケンス（ESC [ A など）を読み捨てる。
+  # 読み捨てないと末尾の英字（A〜D 等）が調整入力欄に混入する。
+  if [ "$_ct_esc_state" -eq 2 ]; then
+    case "$_adj_key" in [0-9\;]) ;; *) _ct_esc_state=0 ;; esac
+    continue
+  elif [ "$_ct_esc_state" -eq 1 ]; then
+    _ct_esc_state=0
+    case "$_adj_key" in '['|'O') _ct_esc_state=2; continue ;; esac
+  fi
+  case "$_adj_key" in
+    '')
+      if [ -n "$_ct_adjust_buffer" ]; then
+        _adj_delta=$(_ct_parse_adj_secs "$_ct_adjust_buffer")
+        _ct_adjust_buffer=""
+        if [ -n "$_adj_delta" ]; then
+          _ct_now_adj=$(date +%s)
+          _ct_elapsed_adj=$(( _ct_now_adj - _ct_start ))
+          _new_seconds=$(( seconds + _adj_delta ))
+          if [ "$(( _new_seconds - _ct_elapsed_adj ))" -le 0 ]; then
+            _new_seconds=$(( _ct_elapsed_adj + 1 ))
+          fi
+          seconds=$_new_seconds
+        fi
+      fi
+      ;;
+    $'\177'|$'\010')
+      [ "${#_ct_adjust_buffer}" -gt 0 ] && _ct_adjust_buffer="${_ct_adjust_buffer%?}"
+      ;;
+    $'\033')
+      _ct_esc_state=1
+      ;;
+    [0-9a-zA-Z+-])
+      [ "${#_ct_adjust_buffer}" -lt 20 ] && _ct_adjust_buffer="${_ct_adjust_buffer}${_adj_key}"
+      ;;
+    *)
+      # 全角文字（＋３０ｍ 等）。bash 3.2 の read -n 1 は UTF-8 を1バイトずつ返すため、
+      # 0x80 以上のバイト（bash 4 以降では非 ASCII の1文字）をそのまま連結して文字を
+      # 組み立て、解釈は _ct_parse_adj_secs の全角→半角変換に任せる。
+      # ASCII の記号・制御文字はこれまでどおり受け付けない。
+      _adj_code=$(printf '%d' "'$_adj_key" 2>/dev/null)
+      if [ -n "$_adj_code" ] && { [ "$_adj_code" -lt 0 ] || [ "$_adj_code" -gt 127 ]; }; then
+        [ "${#_ct_adjust_buffer}" -lt 20 ] && _ct_adjust_buffer="${_ct_adjust_buffer}${_adj_key}"
+      fi
+      ;;
+  esac
 done
 
 _ct_interrupted=$_ct_interrupt_requested

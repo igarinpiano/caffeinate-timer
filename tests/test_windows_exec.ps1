@@ -461,6 +461,17 @@ Section '全角・先頭ゼロの正規化'
 OkCase '１：３０'   '90'
 OkCase '００９０'   '5400'
 
+Section '小数部の先頭ゼロ・単位付きの小数（bash 版と同じ値になること）'
+OkCase '0.001h'     '3'
+OkCase '1.05'       '63'
+OkCase '1.5m'       '90'
+OkCase '1.5d'       '129600'
+
+Section 'スラッシュコマンドの境界（bash 版と同じ扱い）'
+ErrCase '/SETTINGS' '入力形式'
+ErrCase '/until'    '/until の形式'
+ErrCase '0y'        '0秒以下'
+
 Section 'カレンダー演算（年・月）'
 foreach ($c in @(@('1y', 363, 367), @('2mo', 57, 63), @('1y2mo', 420, 432))) {
   $r = Parse-Ok $c[0]

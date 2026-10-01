@@ -59,6 +59,11 @@ child.on('error', (err) => {
 
 child.on('exit', (code, signal) => {
   if (signal) {
+    // Re-raise the child's signal so the caller sees the same termination
+    // status.  Our own no-op SIGINT / forwarding SIGTERM handlers would swallow
+    // it otherwise, so drop them first.
+    process.removeAllListeners('SIGINT');
+    process.removeAllListeners('SIGTERM');
     process.kill(process.pid, signal);
   }
   process.exit(code != null ? code : 1);
