@@ -89,17 +89,21 @@ for SCRIPT in $CT_TARGETS; do
   assert_between 61 90 "${r%%	*}" "矢印キーの後の '+1m' が効く"
 
   section "標準入力が EOF のとき"
-  # 3秒のタイマーを EOF の標準入力で走らせ、CPU 時間が実時間に比べて十分小さいこと。
-  cpu=$(python3 - "$SCRIPT" <<'PY'
-import os, resource, subprocess, sys
+  # 6秒のタイマーを EOF の標準入力で走らせ、CPU 時間が実時間の60%未満であること。
+  # 修正前の空回りは1コアを使い切る（ほぼ100%）。固定値の上限にすると、起動や終了通知
+  # （osascript）の固定コストが大きい遅いランナー（macOS Intel）で誤検出するため比率で見る。
+  ratio=$(python3 - "$SCRIPT" <<'PY'
+import resource, subprocess, sys, time
+t = time.time()
 p = subprocess.Popen(['bash', sys.argv[1]], stdin=subprocess.PIPE,
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-p.communicate(b'3s\n', timeout=30)
+p.communicate(b'6s\n', timeout=60)
+wall = time.time() - t
 u = resource.getrusage(resource.RUSAGE_CHILDREN)
-print(int((u.ru_utime + u.ru_stime) * 1000))
+print(int((u.ru_utime + u.ru_stime) * 100 / wall))
 PY
 )
-  assert_between 0 1500 "$cpu" "EOF でもカウントダウンが CPU を使い切らない（CPU ミリ秒）"
+  assert_between 0 59 "$ratio" "EOF でもカウントダウンが CPU を使い切らない（CPU 時間 / 実時間 %）"
 
   section "本体が kill されたときの後始末"
   for sig in TERM KILL; do
