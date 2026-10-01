@@ -19,6 +19,7 @@ tests/run.sh duration     # 名前に duration を含むものだけ実行
 | `test_windows.sh` | `.bat` の構造と PowerShell 5.1 互換性 |
 | `test_launcher.sh` | `bin/caffeinate-timer.js` のプラットフォーム分岐 |
 | `test_environ.sh` | 極端な実行環境（タイムゾーン・DST 境界・ロケール・パス・PATH・TERM） |
+| `test_countdown.sh` | カウントダウン中のキー入力（python3 の pty で実際にキーを送る: 全角の調整・矢印キー・EOF）と、kill されたときの後始末 |
 
 `test_selfcheck.sh` はテスト自身を検査するファイルですが、名前が `test_*.sh` なので
 `run.sh` が自動で拾います。CI でも他のスイートと同じように毎回走ります
@@ -90,3 +91,11 @@ SIGPIPE で対象スクリプトも止まります（1 件あたり 0.1 秒程�
 | `cmd.exe` を裸の名前で spawn する（カレントディレクトリから乗っ取られる） | `test_launcher.sh` |
 | `cmd /c` の引用が外れる（`C:\Program Files (x86)\...` で起動できない） | `test_launcher.sh` |
 | 時間調整の桁数上限が無く int64 が桁あふれする | `test_duration.sh` / `test_adjust.sh` |
+| 先頭ゼロ除去が小数部まで削る（`0.001h` が 360 秒、`1.05` が 90 秒になる） | `test_duration.sh` / `test_windows_exec.ps1` |
+| `0y` / `/wait` 単体 / `/until` 単体が汎用の「入力形式がわかりません」になる | `test_duration.sh` / `test_windows_exec.ps1` |
+| `/until` の時刻やコマンドの区切りが全角・タブだと受理されない | `test_duration.sh` |
+| `.bat` だけコマンド名の大文字・小文字を区別しない（`/SETTINGS` が通る） | `test_windows_exec.ps1` |
+| 全角の調整入力（`＋１ｍ`）が `read -n 1` のバイト分割で捨てられる | `test_countdown.sh` |
+| 矢印キーのエスケープシーケンスの英字が調整入力欄に混入する | `test_countdown.sh` |
+| 標準入力が EOF のとき調整入力ループが CPU を使い切る | `test_countdown.sh` |
+| SIGTERM / SIGKILL で本体が終わるとスリープ防止プロセスが孤児として残り、スリープを無期限に止める | `test_countdown.sh` |

@@ -40,8 +40,13 @@ curl --proto '=https' --tlsv1.2 --max-redirs 5 -fsSL \
 
 # ── Checksum verification ──────────────────────────────────────────────────
 printf 'Verifying checksum...\n'
-EXPECTED="$(awk -v f="$FILE" '{gsub(/^\*/, "", $2); if ($2 == f) print $1}' \
-  "${TMP_DIR}/checksums.txt")"
+# Accept both "*file" (sha256sum binary-mode marker) and "./file", and keep
+# only the first match: duplicate lines would otherwise yield a multi-line
+# value that can never equal the computed hash.
+EXPECTED="$(tr -d '\r' < "${TMP_DIR}/checksums.txt" | awk -v f="$FILE" '{
+  sub(/^\*/, "", $2); sub(/^\.\//, "", $2)
+  if ($2 == f && $1 ~ /^[0-9a-fA-F]+$/ && length($1) == 64) { print tolower($1); exit }
+}')"
 if [ -z "$EXPECTED" ]; then
   printf 'Error: checksum for %s not found in checksums.txt\n' "$FILE" >&2
   exit 1

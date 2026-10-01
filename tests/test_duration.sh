@@ -42,6 +42,28 @@ for SCRIPT in $CT_TARGETS; do
   ok '45MIN'      2700
   ok '1H'         3600
 
+  section "小数部の先頭ゼロ・単位付きの小数"
+  # 先頭ゼロ除去が小数部まで削り、0.001h が 0.1h（360秒）に化けていた不具合の退行防止
+  ok '0.001h'     3
+  ok '1.05'       63
+  ok '0.05h'      180
+  ok '00.5h'      1800
+  ok '1.5m'       90
+  ok '1.5d'       129600
+  ok '2.5s'       2
+  ok '０．０５ｈ'  180
+
+  section "スラッシュコマンドの境界"
+  assert_match '^ERR /wait の後に' "$(duration "$SCRIPT" '/wait')" "'/wait' 単体は専用のエラーになる"
+  assert_match '^ERR /until の形式' "$(duration "$SCRIPT" '/until')" "'/until' 単体は専用のエラーになる"
+  assert_match '^OK [0-9]+$' "$(duration "$SCRIPT" '/until １８：３０')" "'/until' の時刻は全角でも受理される"
+  # /bg を受理させると実際にバックグラウンドの待機が起動して残るため、
+  # 0秒のエラーで「タブ区切りでも /bg として解釈された」ことを確かめる
+  err "$(printf '/bg\t0')" '0秒以下'
+  err '/SETTINGS' '入力形式'
+  err '0y'        '0秒以下'
+  err '0mo'       '0秒以下'
+
   section "空白・全角・先頭ゼロの正規化"
   ok ' 90 '       5400
   ok '1h 30m'     5400

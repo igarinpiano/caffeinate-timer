@@ -140,6 +140,9 @@ function Start-CaffeinateSleepBlock {
 # System.Windows.Forms.NotifyIcon によるバルーン通知。
 # テキストはハードコードされており、ユーザー入力を含まない。
 # 失敗しても処理を継続する。
+# 表示直後に Dispose すると通知領域のアイコンと一緒に通知も消えてしまうため、
+# アイコンは「Enterで閉じる」の後（Close-CaffeinateNotification）で破棄する。
+$script:CaffeinateNotifyIcon = $null
 function Send-CaffeinateNotification {
     try {
         Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue
@@ -150,9 +153,14 @@ function Send-CaffeinateNotification {
         $n.BalloonTipText  = "スリープ防止が終了しました。"
         $n.Visible = $true
         $n.ShowBalloonTip(5000)
-        Start-Sleep -Milliseconds 200
-        $n.Dispose()
+        $script:CaffeinateNotifyIcon = $n
     } catch {}
+}
+
+function Close-CaffeinateNotification {
+    if ($null -eq $script:CaffeinateNotifyIcon) { return }
+    try { $script:CaffeinateNotifyIcon.Dispose() } catch {}
+    $script:CaffeinateNotifyIcon = $null
 }
 
 # ── 時間調整: 差分秒数のパース ─────────────────────────────
@@ -183,8 +191,10 @@ function Invoke-CaffeinateAdjust {
             -replace 'seconds?','s'  `
             -replace 'secs?',   's'  `
             -replace 'days?',   'd'
-    $a = $a -replace '(?<![0-9])0+(?=[0-9])', ''
+    $a = $a -replace '(?<![0-9.])0+(?=[0-9])', ''
     if ($a.Length -gt 20) { return $null }
+    # \d が一致する ASCII 以外の数字は [long] 変換で例外になるため弾く
+    if ($a -match '[^\x00-\x7F]') { return $null }
     $yearAdj  = 0L
     $monthAdj = 0L
     if ($a -match '^(\d+)y(.*)$') {
@@ -219,9 +229,11 @@ function Invoke-CaffeinateAdjust {
     $totalSec = $sec
     if ($yearAdj -gt 0 -or $monthAdj -gt 0) {
         try {
+            # DateTime 同士の差は Kind を見ずに壁時計の差になるため、夏時間をまたぐと
+            # 1時間ずれる。UTC に直してから差を取る。
             $_nc  = Get-Date
             $_fc  = $_nc.AddYears([int]$yearAdj).AddMonths([int]$monthAdj)
-            $totalSec = [long]($_fc - $_nc).TotalSeconds + $sec
+            $totalSec = [long]($_fc.ToUniversalTime() - $_nc.ToUniversalTime()).TotalSeconds + $sec
         } catch { return $null }
     }
     if ($totalSec -eq 0L) { return $null }
@@ -252,7 +264,7 @@ function Write-CaffeinateTimerUi {
     } else {
         $script:CaffeinateTimerUiActive = $true
     }
-    Write-Host -NoNewline ("{0}[2K{1}{0}[1E{0}[2K  {2}調整{3} {4}" -f $E, $StatusLine, $CYAN, $RESET, $InputBuffer)
+    Write-Host -NoNewline ("{0}[2K{1}{0}[1E{0}[2K  {2}調整入力:{3} {4}" -f $E, $StatusLine, $CYAN, $RESET, $InputBuffer)
 }
 
 function Clear-CaffeinateTimerUi {
@@ -270,6 +282,9 @@ function Clear-CaffeinateTimerUi {
 function Start-WaitMode {
     param([string]$Target)
     $Target = $Target.Trim()
+    # Get-Process -Name は拡張子なしの名前で照合するため、タスクマネージャー等で
+    # 見える "notepad.exe" をそのまま渡すと見つからない。末尾の .exe は取り除く。
+    if ($Target -imatch '^(.+)\.exe$') { $Target = $Matches[1] }
 
     if ([string]::IsNullOrEmpty($Target)) {
         Write-Host "${RED}❌ /wait の後にプロセス名またはPIDを指定してください。${RESET}"
@@ -335,14 +350,15 @@ function Start-WaitMode {
     Start-CaffeinateSleepBlock
     try { [Console]::TreatControlCAsInput = $true } catch {}
 
-    $wStart      = Get-Date
+    # 経過時間は UTC で測る（ローカル時刻だと夏時間の切り替えで1時間跳ぶ）
+    $wStart      = [DateTime]::UtcNow
     $wTick       = 0
     $interrupted = $false
     $alive       = $true
 
     try {
         while ($alive) {
-            $elapsed = [long][Math]::Floor(((Get-Date) - $wStart).TotalSeconds)
+            $elapsed = [long][Math]::Floor(([DateTime]::UtcNow - $wStart).TotalSeconds)
             $eH = [int][Math]::Floor($elapsed / 3600)
             $eM = [int][Math]::Floor(($elapsed % 3600) / 60)
             $eS = [int]($elapsed % 60)
@@ -393,6 +409,7 @@ function Start-WaitMode {
         Write-Host ""
     }
     Read-Host "Enterで閉じる..."
+    Close-CaffeinateNotification
 }
 
 # ── 設定メニュー関数 ─────────────────────────────────────
@@ -450,10 +467,21 @@ Write-Host "  ${CYAN}/settings${RESET}    → 設定"
 Write-Host ""
 $raw = Read-Host "入力"
 Write-Host ""
+if ($null -eq $raw) { $raw = '' }   # 標準入力が閉じている場合
+
+# ── 前処理⓪：タブ・全角の正規化と前後の空白除去 ─────────────
+# コマンド（/until /wait /bg）の判定より前に行う。後で行うと、
+# 「/until １８：３０」「/wait　1234」のように全角数字・全角空白を含む入力が
+# コマンドとして認識されず、本体入力とも挙動が食い違う。
+$raw = (Convert-CaffeinateFullWidth ($raw.Replace("`t", ' '))).Trim()
+
+# コマンド名は bash 版と同じく大文字・小文字を区別する（-ceq / -cmatch / -clike）。
+# PowerShell の -eq / -match / -like は既定で区別しないため、/SETTINGS や /BG が
+# Windows でだけ受理されていた。
 
 # ── /settings コマンド ────────────────────────────────────
 # 前処理を通す前に検出する（スペース除去・小文字化の影響を受けないよう先に処理）
-if ($raw.Trim() -eq '/settings') {
+if ($raw -ceq '/settings') {
     Show-SettingsMenu
     exit 0
 }
@@ -461,8 +489,8 @@ if ($raw.Trim() -eq '/settings') {
 # ── /wait コマンド ─────────────────────────────────────────
 # 前処理を通す前に検出する。ターゲットはプロセス名/PIDなので
 # 時間文字列の正規化パイプラインを通さない。
-$trimmedRaw = $raw.Trim()
-if ($trimmedRaw -match '^/wait( .+)?$') {
+$trimmedRaw = $raw
+if ($trimmedRaw -cmatch '^/wait( .+)?$') {
     $waitArg = if ($Matches[1]) { $Matches[1].Trim() } else { '' }
     Start-WaitMode -Target $waitArg
     exit 0
@@ -472,10 +500,10 @@ if ($trimmedRaw -match '^/wait( .+)?$') {
 # /bg <時間> の形式を検出し、フラグを立てて時間部分のみ以降の処理に渡す。
 # /bg 単体（時間なし）はエラー。
 $bgMode = $false
-if ($trimmedRaw -like '/bg *') {
+if ($trimmedRaw -clike '/bg *') {
     $bgMode = $true
-    $raw    = $trimmedRaw.Substring(4)   # '/bg ' = 4 文字
-} elseif ($trimmedRaw -eq '/bg') {
+    $raw    = $trimmedRaw.Substring(4).Trim()   # '/bg ' = 4 文字
+} elseif ($trimmedRaw -ceq '/bg') {
     Write-Host "${RED}❌ /bg の後に時間を指定してください。${RESET}"
     Write-Host "例: ${CYAN}/bg 90${RESET}  または  ${CYAN}/bg 1h30m${RESET}"
     Write-Host ""
@@ -485,10 +513,19 @@ if ($trimmedRaw -like '/bg *') {
 
 # ── /until コマンド ────────────────────────────────────────────
 # /bg /until HH:MM の形式も自然にサポート（/bg 除去後に検出）。
-# セキュリティ: HH:MM のみ許可（^\d{1,2}:\d{2}$）。
-#              [int] キャストで範囲チェック。コマンド実行なし。
+# セキュリティ: HH:MM のみ許可（^[0-9]{1,2}:[0-9]{2}$）。
+#              \d は全角数字などの Unicode 数字にも一致し、[int] 変換で例外になるため
+#              [0-9] を使う。[int] キャストで範囲チェック。コマンド実行なし。
+# 形式不正（/until 単体・/until 1830 等）は bash 版と同じく専用のエラーを出す。
 $untilParsed = $false
-if ($raw.Trim() -match '^/until\s+(\d{1,2}):(\d{2})\s*$') {
+if ($raw -cmatch '^/until(\s|$)') {
+    if (-not ($raw -match '^/until\s+([0-9]{1,2})\s*:\s*([0-9]{2})$')) {
+        Write-Host "${RED}❌ /until の形式が不正です。HH:MM 形式で指定してください。${RESET}"
+        Write-Host "例: ${CYAN}/until 18:30${RESET}  または  ${CYAN}/until 9:00${RESET}"
+        Write-Host ""
+        Read-Host "Enterで閉じる..."
+        exit 1
+    }
     $uH = [int]$Matches[1]
     $uM = [int]$Matches[2]
     if ($uH -gt 23 -or $uM -gt 59) {
@@ -502,7 +539,8 @@ if ($raw.Trim() -match '^/until\s+(\d{1,2}):(\d{2})\s*$') {
     $_targetDt = [DateTime]::new($_nowU.Year, $_nowU.Month, $_nowU.Day, $uH, $uM, 0)
     # 指定時刻が現時刻以前（同秒含む）なら翌日として扱う
     if ($_targetDt -le $_nowU) { $_targetDt = $_targetDt.AddDays(1) }
-    $seconds      = [long]($_targetDt - $_nowU).TotalSeconds
+    # 差は UTC で取る（壁時計同士の差だと夏時間の切り替わる日に1時間ずれる）
+    $seconds      = [long]($_targetDt.ToUniversalTime() - $_nowU.ToUniversalTime()).TotalSeconds
     $subSeconds   = $seconds
     $yearVal      = 0L
     $monthVal     = 0L
@@ -511,8 +549,7 @@ if ($raw.Trim() -match '^/until\s+(\d{1,2}):(\d{2})\s*$') {
 
 if (-not $untilParsed) {
 
-# ── 前処理①：全角→半角変換 ─────────────────────────
-$raw = Convert-CaffeinateFullWidth $raw
+# ── 前処理①：全角→半角変換（前処理⓪で実施済み）──────────────
 
 # ── 前処理②：半角スペース除去・小文字化 ────────────────
 $inp = $raw.Replace(' ', '').ToLower()
@@ -532,14 +569,26 @@ $inp = $inp -replace 'months?',  'mo' `
 
 # ── 前処理③：各数値グループの先頭ゼロを除去 ─────────────────────────
 # 文字列長チェックが先頭ゼロで誤判定しないよう正規化する（例: 000001h → 1h）。
-# .NET regex の後読み (?<![0-9]) で「数字以外の直後」の先頭ゼロを除去する。
-$inp = $inp -replace '(?<![0-9])0+(?=[0-9])', ''
+# .NET regex の後読み (?<![0-9.]) で「数字・小数点以外の直後」の先頭ゼロを除去する。
+# 小数点の直後を除外しないと小数部の先頭ゼロまで消え、0.001h が 0.1h（3秒 → 360秒）に化ける。
+$inp = $inp -replace '(?<![0-9.])0+(?=[0-9])', ''
+
+# .NET の \d は全角以外の Unicode 数字（٣ など）にも一致し、[long] 変換で例外になる。
+# 全角→半角変換の後に ASCII 以外が残っている入力は形式不明として扱う（bash 版と同じ結果）。
+if ($inp -match '[^\x00-\x7F]') {
+    Write-Host "${RED}❌ 入力形式がわかりませんでした。${RESET}"
+    Write-Host "例: ${CYAN}90 / 1:30 / 1:30:00 / 45m / 1h / 1.5h / 1h30m20s / 1d / 1d3h${RESET}"
+    Write-Host ""
+    Read-Host "Enterで閉じる..."
+    exit 1
+}
 
 # ── 年・月コンポーネントの抽出 ──────────────────────────────────────
 # カレンダー演算が必要なため、パターンマッチの前に y / mo を分離する。
 # 桁数を4桁以内に制限し AddYears()/AddMonths() への過大入力を防ぐ。
 $yearVal  = 0L
 $monthVal = 0L
+$ymGiven  = $false   # 0y / 0mo のように年・月が明示されたか（0秒のエラーを正しく出すため）
 
 if ($inp -match '^(\d+)y(.*)$') {
     if ($Matches[1].Length -gt 4) {
@@ -551,6 +600,7 @@ if ($inp -match '^(\d+)y(.*)$') {
     }
     $yearVal = [long]$Matches[1]
     $inp = $Matches[2]
+    $ymGiven = $true
 }
 
 if ($inp -match '^(\d+)mo(.*)$') {
@@ -563,6 +613,7 @@ if ($inp -match '^(\d+)mo(.*)$') {
     }
     $monthVal = [long]$Matches[1]
     $inp = $Matches[2]
+    $ymGiven = $true
 }
 
 # ── 入力文字数チェック ───────────────────────────────────
@@ -582,7 +633,8 @@ $seconds = 0L
 $parsed  = $true
 
 # 0) 年・月のみ（d/h/m/s なし）
-if      ($inp -eq '' -and ($yearVal -gt 0 -or $monthVal -gt 0)) {
+#    0y / 0mo も「形式不明」ではなく 0 秒として後段の 0秒チェックに任せる
+if      ($inp -eq '' -and $ymGiven) {
     # d/h/m/s 分は 0 秒として扱う（年・月のみ指定）
 
 # 1) 整数のみ → 分
@@ -632,11 +684,13 @@ if      ($inp -eq '' -and ($yearVal -gt 0 -or $monthVal -gt 0)) {
     $monthVal = [long]$Matches[2]
     $seconds  = [long]$Matches[3] * 86400L + [long]$Matches[4] * 3600L + [long]$Matches[5] * 60L + [long]$Matches[6]
 
-# 5) 小数h → 時間（例: 1.5h）
-} elseif ($inp -match '^(\d+)\.(\d+)h$') {
+# 5) 小数 + 単位（例: 1.5h / 1.5d / 2.5m / 0.5s）
+#    正規化後16文字以内なので 整数部+小数部 は d で最大14桁 → ×86400 でも Int64 に収まる
+} elseif ($inp -match '^(\d+)\.(\d+)([dhms])$') {
+    $unit = switch ($Matches[3]) { 'd' { 86400L } 'h' { 3600L } 'm' { 60L } default { 1L } }
     $ip = [long]$Matches[1]; $dp = $Matches[2]; if ($dp.Length -gt 9) { $dp = $dp.Substring(0, 9) }; $dl = $dp.Length
     $pow = [long][Math]::Pow(10, $dl)
-    $seconds = [long][Math]::Truncate(($ip * $pow + [long]$dp) * 3600L / $pow)
+    $seconds = [long][Math]::Truncate(($ip * $pow + [long]$dp) * $unit / $pow)
 
 # 6) XdYhZmWs（最も長いものを先に）
 } elseif ($inp -match '^(\d+)d(\d+)h(\d+)m(\d+)s$') {
@@ -723,12 +777,15 @@ if (-not $parsed) {
 # $_now を先頭で一度だけ取得し、以降の全時刻計算の基点として使い回す。
 # これにより、カレンダー演算・表示・最大秒数チェックの各ステップ間で
 # システム時計が1秒進むことによるドリフトを防ぐ。
+# DateTime 同士の差・加算は Kind を見ずに壁時計で計算されるため、夏時間をまたぐと
+# 1時間ずれる。秒数の計算とカウントダウンは UTC で行い、表示だけローカル時刻に戻す。
 $subSeconds = $seconds
 $_now = Get-Date
+$_nowUtc = $_now.ToUniversalTime()
 if ($yearVal -gt 0 -or $monthVal -gt 0) {
     try {
         $_endCal = $_now.AddYears([int]$yearVal).AddMonths([int]$monthVal)
-        $seconds = [long]($_endCal - $_now).TotalSeconds + $subSeconds
+        $seconds = [long]($_endCal.ToUniversalTime() - $_nowUtc).TotalSeconds + $subSeconds
     } catch {
         Write-Host "${RED}❌ 設定可能な最大時間を超えています。${RESET}"
         Write-Host ""
@@ -746,8 +803,9 @@ if ($seconds -le 0) {
 }
 
 # ── 最大秒数チェック ─────────────────────────────────────
-# (Get-Date).AddSeconds() が DateTime.MaxValue(西暦9999年)を超えると例外をスローする
-$maxSeconds = [long](([DateTime]::MaxValue - $_now).TotalSeconds) - 1L
+# (Get-Date).AddSeconds() が DateTime.MaxValue(西暦9999年)を超えると例外をスローする。
+# 計算は UTC で行うため、UTC 基準で上限を取り、タイムゾーン差の分（最大1日）の余裕を残す。
+$maxSeconds = [long](([DateTime]::MaxValue - $_nowUtc).TotalSeconds) - 86400L
 if ($seconds -gt $maxSeconds) {
     Write-Host "${RED}❌ 設定可能な最大時間を超えています。${RESET}"
     Write-Host ""
@@ -757,7 +815,7 @@ if ($seconds -gt $maxSeconds) {
 
 # ── 時刻・継続時間の表示 ─────────────────────────────────
 $nowStr = $_now.ToString('yyyy-MM-dd HH:mm:ss')
-$endStr = $_now.AddSeconds($seconds).ToString('yyyy-MM-dd HH:mm:ss')
+$endStr = $_nowUtc.AddSeconds($seconds).ToLocalTime().ToString('yyyy-MM-dd HH:mm:ss')
 $_dS = $subSeconds % 60L
 $_dM = [Math]::Floor(($subSeconds % 3600L) / 60L)
 $_dH = [Math]::Floor(($subSeconds % 86400L) / 3600L)
@@ -782,6 +840,8 @@ Write-Host ""
 # ── /bg モード: バックグラウンドで実行 ──────────────────
 # $seconds は検証済み [long] 整数のみをスクリプト文字列に埋め込む。
 # base64 エンコードで -EncodedCommand に渡すため、インジェクション不可。
+# Start-Sleep -Seconds は Int32 のため、約68年を超える秒数を直接渡すと引数エラーで
+# 待機せずに次の行へ進み、スリープ防止が即座に解除される。1日単位に分けて待つ。
 # 子プロセス内で使用する WinPwr クラスを WinPwrBg と命名し、
 # 親プロセス内の WinPwr と名前衝突しないようにする（別プロセスのため
 # 実際は衝突しないが、コードの意図を明確にするため）。
@@ -791,7 +851,8 @@ if ($bgMode) {
     $bgScript = `
         "Add-Type -TypeDefinition 'using System.Runtime.InteropServices; public static class WinPwrBg { [DllImport(""kernel32.dll"")] public static extern uint SetThreadExecutionState(uint f); public static void Prevent(){ SetThreadExecutionState(0x80000003u); } public static void Allow(){ SetThreadExecutionState(0x80000000u); } }' -Language CSharp -ErrorAction SilentlyContinue`n" + `
         "[WinPwrBg]::Prevent()`n" + `
-        "Start-Sleep -Seconds $seconds`n" + `
+        "`$end = [DateTime]::UtcNow.AddSeconds($seconds)`n" + `
+        "while (`$true) { `$r = (`$end - [DateTime]::UtcNow).TotalSeconds; if (`$r -le 0) { break }; Start-Sleep -Seconds ([int][Math]::Min([Math]::Ceiling(`$r), 86400)) }`n" + `
         "[WinPwrBg]::Allow()`n" + `
         "Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue`n" + `
         "Add-Type -AssemblyName System.Drawing -ErrorAction SilentlyContinue`n" + `
@@ -833,7 +894,8 @@ Start-CaffeinateSleepBlock
 # 200ms ポーリングで検出 → 確実にスリープ防止を解除できる
 try { [Console]::TreatControlCAsInput = $true } catch {}
 
-$adjStart    = Get-Date
+# 夏時間の切り替えで残り時間が1時間ずれないよう、UTC で計る
+$adjStart    = [DateTime]::UtcNow
 $targetTime  = $adjStart.AddSeconds($seconds)
 $interrupted = $false
 $adjBuffer   = ''
@@ -843,14 +905,14 @@ Start-CaffeinateTimerUi
 # 異常終了・Terminating Error 発生時でも TreatControlCAsInput の
 # リセットとスリープ防止の解除が必ず実行されるようにする。
 try {
-    while ((Get-Date) -lt $targetTime) {
+    while ([DateTime]::UtcNow -lt $targetTime) {
         # ── カウントダウン表示（毎フレーム更新）──────────────
-        $remain = [long][Math]::Ceiling(($targetTime - (Get-Date)).TotalSeconds)
+        $remain = [long][Math]::Ceiling(($targetTime - [DateTime]::UtcNow).TotalSeconds)
         if ($remain -lt 0) { $remain = 0 }
         $rH      = [int][Math]::Floor($remain / 3600)
         $rM      = [int][Math]::Floor(($remain % 3600) / 60)
         $rS      = [int]($remain % 60)
-        $elapsed_bar = [long][Math]::Floor(((Get-Date) - $adjStart).TotalSeconds)
+        $elapsed_bar = [long][Math]::Floor(([DateTime]::UtcNow - $adjStart).TotalSeconds)
         if ($elapsed_bar -lt 0) { $elapsed_bar = 0 }
         $filled  = if ($seconds -gt 0) { [int][Math]::Floor($elapsed_bar * 20 / $seconds) } else { 20 }
         if ($filled -gt 20) { $filled = 20 }
@@ -875,18 +937,23 @@ try {
                     $adjDelta = Invoke-CaffeinateAdjust -AdjStr $adjBuffer
                     $adjBuffer = ''
                     if ($null -ne $adjDelta) {
-                        $elapsed_now   = [long][Math]::Floor(((Get-Date) - $adjStart).TotalSeconds)
+                        $elapsed_now   = [long][Math]::Floor(([DateTime]::UtcNow - $adjStart).TotalSeconds)
                         $newSeconds    = $seconds + $adjDelta
                         # 残り時間が0以下にならないよう保護（最低1秒を確保）
                         if (($newSeconds - $elapsed_now) -le 0L) { $newSeconds = $elapsed_now + 1L }
+                        # 終了時刻を先に求める。DateTime の上限を超えると AddSeconds が例外を
+                        # 投げるため、$seconds だけ更新されて表示と終了判定が食い違わないようにする。
+                        $newTarget  = $adjStart.AddSeconds($newSeconds)
                         $seconds    = $newSeconds
-                        $targetTime = $adjStart.AddSeconds($seconds)
+                        $targetTime = $newTarget
                     }
                 } elseif ($key.Key -eq [ConsoleKey]::Backspace) {
                     if ($adjBuffer.Length -gt 0) { $adjBuffer = $adjBuffer.Substring(0, $adjBuffer.Length - 1) }
                 } else {
-                    # 通常文字をバッファに追記（最大20文字で打ち切り）
-                    if ($adjBuffer.Length -lt 20 -and $key.KeyChar -ne [char]0) {
+                    # 通常文字をバッファに追記（最大20文字で打ち切り）。
+                    # Esc（0x1B）や Tab 等の制御文字を入れると、入力欄の再描画時に
+                    # 端末がエスケープシーケンスとして解釈して表示が崩れるため除外する。
+                    if ($adjBuffer.Length -lt 20 -and -not [char]::IsControl($key.KeyChar)) {
                         $adjBuffer += $key.KeyChar
                     }
                 }
@@ -913,4 +980,5 @@ if ($interrupted) {
     Write-Host ""
 }
 Read-Host "Enterで閉じる..."
+Close-CaffeinateNotification
 #>PS
